@@ -28,7 +28,8 @@ UPDATE_FILENAME = "config/update.yaml"
 @dataclass
 class UpdateConfig:
     github_repo: str = DEFAULT_REPO
-    check_on_startup: bool = False
+    check_on_startup: bool = True
+    auto_prompt_install: bool = True
     channel: str = "latest"  # latest release tag
 
 
@@ -60,9 +61,13 @@ def load_update_config(root: Path) -> UpdateConfig:
     data: dict[str, Any] = {}
     if path.exists():
         data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    # Defaults: check + prompt on startup (customer PCs)
+    check = data.get("check_on_startup")
+    prompt = data.get("auto_prompt_install")
     return UpdateConfig(
         github_repo=str(data.get("github_repo") or DEFAULT_REPO),
-        check_on_startup=bool(data.get("check_on_startup", False)),
+        check_on_startup=True if check is None else bool(check),
+        auto_prompt_install=True if prompt is None else bool(prompt),
         channel=str(data.get("channel") or "latest"),
     )
 
@@ -75,6 +80,7 @@ def save_update_config(root: Path, cfg: UpdateConfig) -> Path:
             {
                 "github_repo": cfg.github_repo,
                 "check_on_startup": cfg.check_on_startup,
+                "auto_prompt_install": cfg.auto_prompt_install,
                 "channel": cfg.channel,
             },
             sort_keys=False,
@@ -304,9 +310,13 @@ def apply_best_update(root: Path, release: ReleaseInfo | None = None) -> str:
 
 def spawn_external_updater(root: Path) -> Path:
     """Write and launch a detached PowerShell updater so the GUI can exit."""
-    ps1 = root / "installer" / "Update-BTS.ps1"
-    if not ps1.exists():
-        raise FileNotFoundError(f"Missing {ps1}")
+    candidates = [
+        root / "scripts" / "Update-BTS.ps1",
+        root / "installer" / "Update-BTS.ps1",
+    ]
+    ps1 = next((p for p in candidates if p.exists()), None)
+    if ps1 is None:
+        raise FileNotFoundError("Missing scripts/Update-BTS.ps1")
     flags = subprocess.CREATE_NEW_CONSOLE if os.name == "nt" else 0
     subprocess.Popen(
         [

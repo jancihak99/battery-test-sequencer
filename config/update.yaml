@@ -1,6 +1,6 @@
-# Auto-update (private GitHub). Token is NOT stored here —
-# put a fine-grained PAT in .github_token next to this install
-# (Contents: Read on this repo) or set env BTS_GITHUB_TOKEN.
+# Auto-update from private GitHub Releases.
+# Token: .github_token (Contents: Read) — set once by installer, not in git.
 github_repo: jancihak99/battery-test-sequencer
-check_on_startup: false
+check_on_startup: true
+auto_prompt_install: true
 channel: latest

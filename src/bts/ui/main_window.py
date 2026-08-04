@@ -552,9 +552,15 @@ class MainWindow(QMainWindow):
 
         # --- Updates (private GitHub) ---
         form.addRow(QLabel(""))
-        upd_hdr = QLabel("Aktualizace (privátní GitHub)")
+        upd_hdr = QLabel("Aktualizace (automaticky z GitHubu)")
         upd_hdr.setStyleSheet("font-weight:600;")
         form.addRow(upd_hdr)
+        form.addRow(
+            QLabel(
+                "Při startu apka sama zjistí na GitHubu, jestli je novější release, "
+                "a nabídne stažení. Ty jen nahráváš release (publish_release.ps1)."
+            )
+        )
         try:
             from bts.version import read_version
             from bts.update import load_update_config, read_token
@@ -573,19 +579,22 @@ class MainWindow(QMainWindow):
         self.ed_github_token = QLineEdit()
         self.ed_github_token.setEchoMode(QLineEdit.Password)
         self.ed_github_token.setPlaceholderText(
-            "fine-grained PAT (Contents: Read) — uloží se do .github_token"
+            "PAT (Contents: Read) — jednou při instalaci; apka ho použije sama"
             if not has_tok
-            else "token už je uložený — vyplň jen při změně"
+            else "token uložen — apka kontroluje GitHub sama"
         )
         form.addRow("GitHub token", self.ed_github_token)
-        self.chk_update_startup = QCheckBox("Kontrolovat aktualizace při startu")
-        self.chk_update_startup.setChecked(bool(ucfg.check_on_startup) if ucfg else False)
+        self.chk_update_startup = QCheckBox("Při startu automaticky kontrolovat GitHub")
+        self.chk_update_startup.setChecked(bool(ucfg.check_on_startup) if ucfg else True)
         form.addRow(self.chk_update_startup)
+        self.chk_auto_prompt = QCheckBox("Když je nová verze, rovnou nabídnout instalaci")
+        self.chk_auto_prompt.setChecked(bool(ucfg.auto_prompt_install) if ucfg else True)
+        form.addRow(self.chk_auto_prompt)
         upd_row = QHBoxLayout()
-        self.btn_check_update = QPushButton("Zkontrolovat aktualizace")
+        self.btn_check_update = QPushButton("Zkontrolovat teď")
         self.btn_apply_update = QPushButton("Stáhnout a nainstalovat")
         self.btn_apply_update.setEnabled(False)
-        self.btn_save_update = QPushButton("Uložit update nastavení")
+        self.btn_save_update = QPushButton("Uložit")
         self.btn_check_update.clicked.connect(self._check_updates)
         self.btn_apply_update.clicked.connect(self._apply_updates)
         self.btn_save_update.clicked.connect(self._save_update_settings)
@@ -619,6 +628,7 @@ class MainWindow(QMainWindow):
         cfg = UpdateConfig(
             github_repo=self.ed_github_repo.text().strip() or "jancihak99/battery-test-sequencer",
             check_on_startup=self.chk_update_startup.isChecked(),
+            auto_prompt_install=self.chk_auto_prompt.isChecked(),
             channel="latest",
         )
         save_update_config(self.cfg.root, cfg)
@@ -626,7 +636,7 @@ class MainWindow(QMainWindow):
         if tok:
             write_token(self.cfg.root, tok)
             self.ed_github_token.clear()
-            self.ed_github_token.setPlaceholderText("token uložen — vyplň jen při změně")
+            self.ed_github_token.setPlaceholderText("token uložen — apka kontroluje GitHub sama")
         self.lbl_update_status.setText("Update nastavení uloženo.")
 
     def _check_updates(self) -> None:
@@ -651,31 +661,37 @@ class MainWindow(QMainWindow):
             self._pending_release = result.release
             self.btn_apply_update.setEnabled(True)
             msg = (
-                f"Dostupná verze {result.remote_version} "
-                f"(lokálně {result.local_version}).\n"
-                f"{result.release.name}"
+                f"Na GitHubu je nová verze {result.remote_version} "
+                f"(tady máš {result.local_version})."
             )
             self.lbl_update_status.setText(msg)
-            QMessageBox.information(self, "Aktualizace", msg + "\n\nKlikni Stáhnout a nainstalovat.")
+            reply = QMessageBox.question(
+                self,
+                "Nová verze",
+                msg + "\n\nStáhnout a nainstalovat teď?",
+            )
+            if reply == QMessageBox.Yes:
+                self._apply_updates(confirm=False)
         else:
             self._pending_release = None
             self.btn_apply_update.setEnabled(False)
             self.lbl_update_status.setText(result.message or "Žádná nová verze.")
             QMessageBox.information(self, "Aktualizace", result.message or "Žádná nová verze.")
 
-    def _apply_updates(self) -> None:
+    def _apply_updates(self, *, confirm: bool = True) -> None:
         from bts.update import apply_best_update, spawn_external_updater
 
         if self.engine and getattr(self.engine, "_thread", None) and self.engine._thread.is_alive():
             QMessageBox.warning(self, "Aktualizace", "Nejdřív Stop / dokonči běžící test.")
             return
-        reply = QMessageBox.question(
-            self,
-            "Aktualizace",
-            "Aplikace se ukončí, stáhne update z GitHubu a znovu spustí.\nPokračovat?",
-        )
-        if reply != QMessageBox.Yes:
-            return
+        if confirm:
+            reply = QMessageBox.question(
+                self,
+                "Aktualizace",
+                "Apka se ukončí, stáhne update z GitHubu a znovu spustí.\nPokračovat?",
+            )
+            if reply != QMessageBox.Yes:
+                return
         try:
             # Prefer detached updater (can overwrite files while we exit)
             spawn_external_updater(self.cfg.root)
@@ -694,19 +710,49 @@ class MainWindow(QMainWindow):
                 QMessageBox.critical(self, "Aktualizace selhala", f"{exc}\n{exc2}")
 
     def _maybe_check_updates_on_startup(self) -> None:
+        """Customer PC: query GitHub Releases and offer install if newer."""
         try:
             from bts.update import check_for_update, load_update_config
 
-            if not load_update_config(self.cfg.root).check_on_startup:
+            ucfg = load_update_config(self.cfg.root)
+            if not ucfg.check_on_startup:
                 return
+            if not hasattr(self, "lbl_update_status"):
+                return
+            self.lbl_update_status.setText("Kontroluji GitHub…")
+            QApplication.processEvents()
             result = check_for_update(self.cfg.root)
-            if result.update_available and result.remote_version:
-                self.lbl_update_status.setText(
-                    f"Nová verze {result.remote_version} — Nastavení → Aktualizace"
-                )
-                self._log(f"Update available: {result.remote_version}")
+            if result.error:
+                self.lbl_update_status.setText(result.error)
+                return
+            if hasattr(self, "lbl_app_version"):
+                self.lbl_app_version.setText(f"Verze: {result.local_version}")
+            if not (result.update_available and result.release and result.remote_version):
+                self.lbl_update_status.setText(result.message or f"Aktuální verze {result.local_version}")
+                return
+            self._pending_release = result.release
+            if hasattr(self, "btn_apply_update"):
+                self.btn_apply_update.setEnabled(True)
+            msg = (
+                f"Na GitHubu je nová verze {result.remote_version} "
+                f"(tady {result.local_version})."
+            )
+            self.lbl_update_status.setText(msg)
+            self._log(f"Update available: {result.remote_version}")
+            if not ucfg.auto_prompt_install:
+                return
+            # Don't interrupt an already-running sequence
+            if self.engine and getattr(self.engine, "_thread", None) and self.engine._thread.is_alive():
+                return
+            reply = QMessageBox.question(
+                self,
+                "Nová verze z GitHubu",
+                msg + "\n\nStáhnout a nainstalovat teď?\n(config a runs zůstanou)",
+            )
+            if reply == QMessageBox.Yes:
+                self._apply_updates(confirm=False)
         except Exception:
-            pass
+            logging.getLogger(__name__).exception("Startup update check failed")
 
     def _update_mock_banner(self) -> None:
         if not hasattr(self, "lbl_mock_banner"):

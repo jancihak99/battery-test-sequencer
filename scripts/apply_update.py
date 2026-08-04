@@ -1,4 +1,4 @@
-"""CLI entry for installer/Update-BTS.ps1 — check + apply update."""
+"""CLI entry for scripts/Update-BTS.ps1 — check + apply update."""
 from __future__ import annotations
 
 import sys

@@ -12,3 +12,7 @@ runs/*.log
 .github_token
 *.token
 .DS_Store
+installer/*.lnk
+installer/build/
+installer/BTS-Setup.exe
+scripts/setup_exe/build/

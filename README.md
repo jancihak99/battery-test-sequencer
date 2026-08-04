@@ -8,25 +8,25 @@ Windows desktop app for automating LTO module capacity / DCIR tests with:
 
 Private source + updates: `jancihak99/battery-test-sequencer` (GitHub).
 
-## Install on another PC (portable)
+## Install on another PC
 
-1. Install **Python 3.10+** (tick “Add to PATH”) and ideally **Git** + [GitHub CLI](https://cli.github.com/) (`gh auth login`).
-2. Copy the folder `installer\` (or the whole repo) and run **`installer\Install-BTS.bat`**.
-3. When asked, paste a **fine-grained PAT** with **Contents: Read** on this private repo  
-   (or rely on `gh auth login` on that machine).
-4. App lands in `%LOCALAPPDATA%\EBZ\BatteryTestSequencer` + Desktop shortcut.
-5. Open **Nastavení**, set CAN / EA COM for that lab PC, **Uložit do config**.
+**Pošli jeden soubor:** `installer\BTS-Setup.exe` (ikona apky).
 
-No admin rights required. Lab config (`config/default.yaml`) and `runs/` survive updates.
+Na cílovém PC: Python 3.10+ + Git → dvojklik → PAT / `gh auth` → Nainstalovat.
+
+Znovu sestavit exe: `scripts\setup_exe\build_setup_exe.bat`
 
 ## Auto-update
 
-1. You publish: `powershell -ExecutionPolicy Bypass -File scripts\publish_release.ps1`  
-   (bumps `VERSION`, tags `vX.Y.Z`, creates GitHub Release).
-2. On the lab PC: **Nastavení → Zkontrolovat aktualizace → Stáhnout a nainstalovat**  
-   (or `installer\Update-BTS.ps1`).
-3. Token lives in `.github_token` next to the install (hidden; not in git).
+**Na PC zákazníka to běží samo:** při startu apka zeptá GitHub Releases, pozná novější verzi a nabídne „Stáhnout a nainstalovat“. Token z instalace použije sama.
 
+**Ty (vývojář)** jen nahraješ update:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\publish_release.ps1
+```
+
+(bump `VERSION` → tag → GitHub Release). Pak stačí na lab PC apku znovu otevřít.
 ## Quick start (dev machine)
 
 Double-click **`Start BTS.bat`** (or `Start BTS.vbs`) in the project folder.
