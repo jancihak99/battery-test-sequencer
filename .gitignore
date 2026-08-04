@@ -11,6 +11,9 @@ runs/*.log
 .pytest_cache/
 .github_token
 *.token
+scripts/setup_exe/embed_github_token.txt
+# Generated on release; kept in release commits via git add -f
+src/bts/_embedded_token.py
 .DS_Store
 installer/*.lnk
 installer/build/

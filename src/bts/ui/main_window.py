@@ -573,40 +573,45 @@ class MainWindow(QMainWindow):
                 QLabel("EL slave je HW master/slave — softwarově se neadresuje. Prázdné/auto = *IDN? scan.")
             )
 
-        # --- Updates (private GitHub) ---
+        # --- Updates (private GitHub; token is embedded on publish) ---
         form.addRow(QLabel(""))
         upd_hdr = QLabel("Aktualizace (automaticky z GitHubu)")
         upd_hdr.setStyleSheet("font-weight:600;")
         form.addRow(upd_hdr)
         form.addRow(
             QLabel(
-                "Při startu apka sama zjistí na GitHubu, jestli je novější release, "
-                "a nabídne stažení. Ty jen nahráváš release (publish_release.ps1)."
+                "Při startu apka sama zkontroluje GitHub Releases a nabídne update. "
+                "Token pro private repo je vestavěný v releasu — na lab PC nic nevyplňuješ."
             )
         )
         try:
             from bts.version import read_version
-            from bts.update import load_update_config, read_token
+            from bts.update import load_update_config, read_token, token_source
 
             ver = read_version(self.cfg.root)
             ucfg = load_update_config(self.cfg.root)
             has_tok = bool(read_token(self.cfg.root))
+            tok_src = token_source(self.cfg.root)
         except Exception:
             ver = "?"
             ucfg = None
             has_tok = False
+            tok_src = "chybí"
         self.lbl_app_version = QLabel(f"Verze: {ver}")
         form.addRow(self.lbl_app_version)
         self.ed_github_repo = QLineEdit(ucfg.github_repo if ucfg else "jancihak99/battery-test-sequencer")
         form.addRow("GitHub repo", self.ed_github_repo)
-        self.ed_github_token = QLineEdit()
-        self.ed_github_token.setEchoMode(QLineEdit.Password)
-        self.ed_github_token.setPlaceholderText(
-            "PAT (Contents: Read) — jednou při instalaci; apka ho použije sama"
-            if not has_tok
-            else "token uložen — apka kontroluje GitHub sama"
+        self.lbl_update_auth = QLabel(
+            f"Přístup k private repo: OK ({tok_src})"
+            if has_tok
+            else "Přístup k private repo: chybí — nainstaluj aktuální Setup / release"
         )
-        form.addRow("GitHub token", self.ed_github_token)
+        self.lbl_update_auth.setStyleSheet(f"color:{TEXT_DIM};")
+        form.addRow(self.lbl_update_auth)
+        # Optional override kept but not required (hidden unless needed)
+        self.ed_github_token = QLineEdit(self)
+        self.ed_github_token.setEchoMode(QLineEdit.Password)
+        self.ed_github_token.hide()  # override only; normal path uses embedded token
         self.chk_update_startup = QCheckBox("Při startu automaticky kontrolovat GitHub")
         self.chk_update_startup.setChecked(bool(ucfg.check_on_startup) if ucfg else True)
         form.addRow(self.chk_update_startup)

@@ -1,5 +1,5 @@
 # Auto-update from private GitHub Releases.
-# Token: .github_token (Contents: Read) — set once by installer, not in git.
+# Auth token is embedded into the app on publish (lab PCs do not enter a PAT).
 github_repo: jancihak99/battery-test-sequencer
 check_on_startup: true
 auto_prompt_install: true

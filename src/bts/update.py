@@ -92,14 +92,48 @@ def save_update_config(root: Path, cfg: UpdateConfig) -> Path:
 
 
 def read_token(root: Path) -> str | None:
+    """Resolve GitHub token for private release checks.
+
+    Order: env → install ``.github_token`` → ``config/.update_token`` →
+    embedded token from the last publish (lab PCs need no manual PAT).
+    """
     env = os.environ.get("BTS_GITHUB_TOKEN") or os.environ.get("GITHUB_TOKEN")
     if env and env.strip():
         return env.strip()
-    path = token_path(root)
-    if path.exists():
-        tok = path.read_text(encoding="utf-8").strip()
-        return tok or None
+    for path in (token_path(root), root / "config" / ".update_token"):
+        if path.exists():
+            tok = path.read_text(encoding="utf-8").strip()
+            if tok:
+                return tok
+    try:
+        from bts._embedded_token import UPDATE_TOKEN
+
+        tok = (UPDATE_TOKEN or "").strip()
+        if tok:
+            return tok
+    except Exception:
+        pass
     return None
+
+
+def token_source(root: Path) -> str:
+    """Human-readable where the active token came from ( fore Settings)."""
+    env = os.environ.get("BTS_GITHUB_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if env and env.strip():
+        return "env"
+    if token_path(root).exists() and token_path(root).read_text(encoding="utf-8").strip():
+        return "install (.github_token)"
+    upd = root / "config" / ".update_token"
+    if upd.exists() and upd.read_text(encoding="utf-8").strip():
+        return "config/.update_token"
+    try:
+        from bts._embedded_token import UPDATE_TOKEN
+
+        if (UPDATE_TOKEN or "").strip():
+            return "vestavěný (release)"
+    except Exception:
+        pass
+    return "chybí"
 
 
 def write_token(root: Path, token: str) -> Path:
@@ -155,8 +189,9 @@ def check_for_update(root: Path) -> UpdateCheckResult:
                 remote_version=None,
                 update_available=False,
                 error=(
-                    f"GitHub API {exc.code} — private repo potrebuje token "
-                    f"(Nastaveni → Aktualizace, nebo soubor {TOKEN_FILENAME})."
+                    f"GitHub API {exc.code} — private repo, v appce chybí vestavěný update token. "
+                    f"Nainstaluj aktuální BTS-Setup.exe (token je uvnitř releasu), "
+                    f"nebo jednorázově soubor {TOKEN_FILENAME}."
                 ),
             )
         return UpdateCheckResult(
