@@ -142,12 +142,12 @@ class BmsCanDriver(BmsDriver):
         self._reset_dtc_pulses = 0  # remaining heartbeats with Reset Latched DTCs bit set
 
     def connect(self) -> None:
-        import can
+        from bts.can_bus import open_bus
 
         # Idempotent: Start must not open a second handle on the same Kvaser channel
         if self._bus is not None:
             return
-        self._bus = can.interface.Bus(
+        self._bus = open_bus(
             interface=self.cfg.interface,
             channel=self.cfg.channel,
             bitrate=self.cfg.bitrate,

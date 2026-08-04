@@ -103,12 +103,12 @@ def _listen(
     duration_s: float,
 ) -> list[int]:
     """Return list of extended arbitration IDs received (passive)."""
-    import can
+    from bts.can_bus import open_bus
 
     bus = None
     ids: list[int] = []
     try:
-        bus = can.interface.Bus(
+        bus = open_bus(
             interface=interface,
             channel=channel,
             bitrate=bitrate,
@@ -151,9 +151,9 @@ def _best_bmu_sa(ids: list[int]) -> tuple[int | None, int]:
 
 
 def _open_bus(interface: str, channel: int, bitrate: int):
-    import can
+    from bts.can_bus import open_bus
 
-    return can.interface.Bus(
+    return open_bus(
         interface=interface,
         channel=channel,
         bitrate=bitrate,

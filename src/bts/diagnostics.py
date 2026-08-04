@@ -45,16 +45,20 @@ class DiagnosticReport:
     hostname: str
     platform: str
     python: str
+    app_version: str = ""
     usb: list[UsbDeviceInfo] = field(default_factory=list)
     serial_ports: list[SerialPortInfo] = field(default_factory=list)
     checks: list[CheckResult] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    # Raw Windows evidence for support / second PC (Copy report)
+    lab_dump: list[str] = field(default_factory=list)
 
     def to_text(self) -> str:
         lines = [
             "Battery Test Sequencer — Diagnostics",
             f"Generated: {self.generated_at}",
             f"Host: {self.hostname}  ·  {self.platform}  ·  Python {self.python}",
+            f"App: BTS {self.app_version}" if self.app_version else "App: BTS (version unknown)",
             "",
             "=== Checks ===",
         ]
@@ -73,10 +77,18 @@ class DiagnosticReport:
                 lines.append(f"    -> {d.hint}")
         lines.append("")
         lines.append("=== Serial ports ===")
-        if not self.serial_ports:
+        real_ser = real_serial_ports(self.serial_ports)
+        if not real_ser:
             lines.append("(none)")
-        for s in self.serial_ports:
+            for s in self.serial_ports:
+                if (s.description or "").startswith("list_ports failed"):
+                    lines.append(f"- enumeration error: {s.description}")
+        for s in real_ser:
             lines.append(f"- {s.device}: {s.description}  ({s.hwid})")
+        if self.lab_dump:
+            lines.append("")
+            lines.append("=== Lab dump (Windows evidence) ===")
+            lines.extend(self.lab_dump)
         if self.notes:
             lines.append("")
             lines.append("=== Notes ===")
@@ -90,10 +102,12 @@ class DiagnosticReport:
             "hostname": self.hostname,
             "platform": self.platform,
             "python": self.python,
+            "app_version": self.app_version,
             "usb": [asdict(u) for u in self.usb],
             "serial_ports": [asdict(s) for s in self.serial_ports],
             "checks": [asdict(c) for c in self.checks],
             "notes": list(self.notes),
+            "lab_dump": list(self.lab_dump),
         }
 
 
@@ -101,13 +115,19 @@ class DiagnosticReport:
 _KIND_RULES: list[tuple[str, re.Pattern[str], str]] = [
     (
         "kvaser",
-        re.compile(r"kvaser|leaf|memorator|usbc?an|vid_1a94", re.I),
+        re.compile(r"kvaser|leaf|memorator|usbc?an|vid_0bfd|vid_1a94", re.I),
         "Kvaser CAN adapter — use for External CAN to BMU",
     ),
     (
         "serial",
-        re.compile(r"ftdi|cp210|ch340|prolific|usb.?serial|usb.?uart|com\d+|vid_0403|vid_10c4|vid_1a86", re.I),
-        "USB–serial adapter (sometimes used for EA RS-232)",
+        # EA Elektro-Automatik USB VCP is often VID_232E; also CDC/FTDI/etc.
+        re.compile(
+            r"elektro.?automatik|\bea[-_ ]?(psi|el|psb)|if-?ab|vid_232e|"
+            r"ftdi|cp210|ch340|prolific|cdc.?acm|usb.?serial|usb.?uart|"
+            r"com\d+|vid_0403|vid_10c4|vid_1a86|vid_067b|vid_04b4",
+            re.I,
+        ),
+        "USB–serial / EA VCP candidate — should appear under Ports (COM & LPT)",
     ),
     (
         "network",
@@ -257,13 +277,227 @@ def list_serial_ports() -> list[SerialPortInfo]:
     except Exception as exc:
         out.append(
             SerialPortInfo(
-                device="—",
+                device="",
                 description=f"list_ports failed: {exc}",
                 kind="other",
             )
         )
     return out
 
+
+def real_serial_ports(ports: list[SerialPortInfo]) -> list[SerialPortInfo]:
+    """Drop placeholder / error rows from list_serial_ports()."""
+    return [
+        p
+        for p in ports
+        if p.device
+        and p.device not in {"—", "-", "?"}
+        and not (p.description or "").startswith("list_ports failed")
+    ]
+
+def _python_can_version() -> str:
+    try:
+        import can
+
+        return str(getattr(can, "__version__", "?") or "?")
+    except Exception as exc:
+        return f"missing ({exc})"
+
+
+def collect_windows_lab_dump() -> list[str]:
+    """Deep Windows evidence for 'EA was plugged in but no COM' cases.
+
+    Captures Ports class, problem/unknown USB, registry SERIALCOMM,
+    .NET port names, and lab-related processes — independent of pyserial.
+    """
+    lines: list[str] = [f"python-can: {_python_can_version()}"]
+    if platform.system() != "Windows":
+        lines.append("(lab dump is Windows-only)")
+        return lines
+
+    ps = r"""
+$ErrorActionPreference = 'SilentlyContinue'
+$o = [ordered]@{}
+
+# pyserial-independent COM names
+try {
+  $o.net_ports = [System.IO.Ports.SerialPort]::GetPortNames()
+} catch { $o.net_ports = @() }
+
+# Registry map COM -> device
+try {
+  $map = Get-ItemProperty 'HKLM:\HARDWARE\DEVICEMAP\SERIALCOMM' -ErrorAction Stop
+  $o.registry_serialcomm = @{}
+  $map.PSObject.Properties | Where-Object { $_.Name -notlike 'PS*' } | ForEach-Object {
+    $o.registry_serialcomm[$_.Name] = $_.Value
+  }
+} catch { $o.registry_serialcomm = @{} }
+
+# Device Manager "Ports (COM & LPT)"
+$o.pnp_ports = @(Get-PnpDevice -Class Ports -PresentOnly |
+  Select-Object FriendlyName, Status, InstanceId, Class |
+  ForEach-Object {
+    @{ name=$_.FriendlyName; status=$_.Status; id=$_.InstanceId; class=$_.Class }
+  })
+
+# Problem / Error / Unknown present devices (missing drivers often land here)
+$o.problem = @(Get-PnpDevice -PresentOnly |
+  Where-Object {
+    $_.Status -ne 'OK' -or
+    $_.FriendlyName -match 'Unknown|Nezn|Other devices|Jina zar'
+  } |
+  Select-Object FriendlyName, Status, InstanceId, Class |
+  Select-Object -First 40 |
+  ForEach-Object {
+    @{ name=$_.FriendlyName; status=$_.Status; id=$_.InstanceId; class=$_.Class }
+  })
+
+# USB VID devices that look like serial / EA / CDC (even if not classified Ports yet)
+$o.usb_serialish = @(Get-PnpDevice -PresentOnly |
+  Where-Object {
+    $_.InstanceId -match 'USB\\VID_' -and (
+      $_.InstanceId -match 'VID_232E|VID_0403|VID_10C4|VID_1A86|VID_067B|VID_04B4|VID_0483' -or
+      $_.FriendlyName -match 'Serial|UART|CDC|FTDI|CP210|CH340|Prolific|EA |Elektro|IF-AB|COM\d'
+    )
+  } |
+  Select-Object FriendlyName, Status, InstanceId, Class |
+  Select-Object -First 30 |
+  ForEach-Object {
+    @{ name=$_.FriendlyName; status=$_.Status; id=$_.InstanceId; class=$_.Class }
+  })
+
+# Win32_SerialPort (older path; sometimes empty even when COM exists)
+try {
+  $o.wmi_serial = @(Get-CimInstance Win32_SerialPort -ErrorAction SilentlyContinue |
+    Select-Object DeviceID, Name, Description, PNPDeviceID |
+    ForEach-Object {
+      @{ device=$_.DeviceID; name=$_.Name; desc=$_.Description; id=$_.PNPDeviceID }
+    })
+} catch { $o.wmi_serial = @() }
+
+# Processes that commonly lock COM / CAN
+$rx = 'Power.?Control|EasyPower|EasyLoad|EA[-_]?PSI|CanKing|CANalyzer|Busmaster|python|BTS|sequencer'
+$o.processes = @(Get-Process |
+  Where-Object { $_.ProcessName -match $rx -or $_.MainWindowTitle -match $rx } |
+  Select-Object -First 25 ProcessName, Id, MainWindowTitle |
+  ForEach-Object {
+    @{ name=$_.ProcessName; pid=$_.Id; title=($_.MainWindowTitle -replace '\s+',' ').Trim() }
+  })
+
+$o | ConvertTo-Json -Compress -Depth 5
+"""
+    ok, out = _run_ps(ps, timeout_s=20.0)
+    if not out:
+        lines.append(f"PowerShell lab dump failed (ok={ok})")
+        return lines
+
+    try:
+        data = json.loads(out)
+    except json.JSONDecodeError:
+        lines.append(f"lab dump JSON parse error: {out[:240]}")
+        return lines
+
+    def _rows(key: str) -> list[dict[str, Any]]:
+        raw = data.get(key) or []
+        if isinstance(raw, dict):
+            return [raw]
+        if isinstance(raw, list):
+            return [r for r in raw if isinstance(r, dict)]
+        return []
+
+    net = data.get("net_ports") or []
+    if isinstance(net, str):
+        net = [net]
+    lines.append(
+        "NET SerialPort.GetPortNames: "
+        + (", ".join(str(x) for x in net) if net else "(empty)")
+    )
+
+    reg = data.get("registry_serialcomm") or {}
+    if isinstance(reg, dict) and reg:
+        lines.append("Registry SERIALCOMM:")
+        for k, v in sorted(reg.items(), key=lambda kv: str(kv[1])):
+            lines.append(f"  {v} <- {k}")
+    else:
+        lines.append("Registry SERIALCOMM: (empty)")
+
+    ports = _rows("pnp_ports")
+    lines.append(f"PnP Class=Ports (present): {len(ports)}")
+    for r in ports[:20]:
+        lines.append(f"  [{r.get('status')}] {r.get('name')} | {r.get('id')}")
+
+    usbish = _rows("usb_serialish")
+    lines.append(f"USB serial/EA-like VID (present): {len(usbish)}")
+    for r in usbish[:20]:
+        lines.append(f"  [{r.get('status')}] {r.get('name')} | {r.get('id')}")
+    if not usbish:
+        lines.append(
+            "  -> none — EA USB not enumerated (cable/port/power) OR driver never bound"
+        )
+
+    problems = _rows("problem")
+    lines.append(f"Problem / non-OK PnP (sample): {len(problems)}")
+    for r in problems[:25]:
+        lines.append(f"  [{r.get('status')}] {r.get('name')} | {r.get('class')} | {r.get('id')}")
+
+    wmi = _rows("wmi_serial")
+    lines.append(f"Win32_SerialPort: {len(wmi)}")
+    for r in wmi[:15]:
+        lines.append(f"  {r.get('device')}: {r.get('name')} | {r.get('id')}")
+
+    procs = _rows("processes")
+    lines.append(f"Lab-related processes: {len(procs)}")
+    for r in procs[:20]:
+        title = r.get("title") or ""
+        extra = f" — {title}" if title else ""
+        lines.append(f"  {r.get('name')} pid={r.get('pid')}{extra}")
+    if not procs:
+        lines.append("  (none matching Power Control / CanKing / python / BTS)")
+
+    return lines
+
+
+def summarize_ea_usb_visibility(
+    *,
+    serial_ports: list[SerialPortInfo],
+    usb: list[UsbDeviceInfo],
+    lab_dump: list[str],
+) -> CheckResult:
+    """Explain why EA COM is missing using dump evidence."""
+    name = "EA USB visibility"
+    real = real_serial_ports(serial_ports)
+    if real:
+        ports = ", ".join(s.device for s in real[:8])
+        return CheckResult(name, True, f"Windows exposes COM: {ports}")
+
+    serialish_usb = [d for d in usb if d.kind == "serial"]
+    dump = "\n".join(lab_dump)
+    has_usb_candidate = bool(
+        re.search(r"USB serial/EA-like VID \(present\): ([1-9]\d*)\b", dump)
+    )
+    has_problem = bool(re.search(r"Problem / non-OK PnP \(sample\): ([1-9]\d*)\b", dump))
+    reg_empty = "Registry SERIALCOMM: (empty)" in dump
+
+    if serialish_usb or has_usb_candidate:
+        return CheckResult(
+            name,
+            False,
+            "USB serial/EA-like device seen, but no COM port — install/repair EA USB VCP "
+            "driver (Device Manager → update driver), then unplug/replug",
+        )
+    if has_problem and reg_empty:
+        return CheckResult(
+            name,
+            False,
+            "No COM + problem PnP devices present — open Device Manager for yellow ! "
+            "on Unknown USB; often missing EA/FTDI driver on a new PC",
+        )
+    return CheckResult(
+        name,
+        False,
+        "No COM and no EA/serial-like USB VID — Windows does not see EA USB. "
+        "Check cable to this PC, EA front USB, powered hub; then Refresh",
+    )
 
 def list_local_ipv4() -> list[str]:
     """Local IPv4 addresses (excluding loopback) for subnet hints."""
@@ -375,7 +609,9 @@ def check_kvaser_channels() -> CheckResult:
     if not infos:
         # Fallback open
         try:
-            bus = can.Bus(interface="kvaser", channel=0, bitrate=250000, receive_own_messages=False)
+            from bts.can_bus import open_bus
+
+            bus = open_bus(interface="kvaser", channel=0, bitrate=250000, receive_own_messages=False)
             bus.shutdown()
             return CheckResult(
                 "Kvaser driver",
@@ -428,7 +664,7 @@ def check_bmu_link(
     """Kvaser open ≠ BMU alive. Listen briefly for BMU-like frames on External CAN."""
     name = "BMU on CAN (traffic)"
     try:
-        import can
+        import can  # noqa: F401
     except Exception as exc:
         return CheckResult(name, False, f"python-can missing: {exc}")
 
@@ -437,7 +673,9 @@ def check_bmu_link(
     bmu_like = 0
     sample_ids: list[str] = []
     try:
-        bus = can.interface.Bus(
+        from bts.can_bus import open_bus
+
+        bus = open_bus(
             interface=interface,
             channel=channel,
             bitrate=bitrate,
@@ -458,10 +696,17 @@ def check_bmu_link(
                 if len(sample_ids) < 3:
                     sample_ids.append(f"0x{aid:08X}")
     except Exception as exc:
+        detail = str(exc)
+        hint = ""
+        if "canIoCtl" in detail or "Error Code -1" in detail:
+            hint = (
+                " — known python-can 4.6+ / Kvaser driver bug; "
+                "update BTS or pin python-can==4.5.0; close CanKing and retry"
+            )
         return CheckResult(
             name,
             False,
-            f"cannot open ch={channel} @ {bitrate}: {exc}",
+            f"cannot open ch={channel} @ {bitrate}: {detail}{hint}",
         )
     finally:
         if bus is not None:
@@ -545,6 +790,12 @@ def build_report(
         platform=f"{platform.system()} {platform.release()} ({platform.machine()})",
         python=sys.version.split()[0],
     )
+    try:
+        from bts.version import read_version
+
+        report.app_version = read_version()
+    except Exception:
+        report.app_version = ""
 
     usb, usb_err = list_usb_devices()
     report.usb = usb
@@ -552,6 +803,27 @@ def build_report(
         report.notes.append(usb_err)
 
     report.serial_ports = list_serial_ports()
+    report.lab_dump = collect_windows_lab_dump()
+    report.checks.append(
+        CheckResult("python-can", None, f"version {_python_can_version()} (need ≤4.5.x for some Kvaser Leaf)")
+    )
+    report.checks.append(
+        summarize_ea_usb_visibility(
+            serial_ports=report.serial_ports,
+            usb=report.usb,
+            lab_dump=report.lab_dump,
+        )
+    )
+    dump_text = "\n".join(report.lab_dump)
+    if re.search(r"CanKing|CANalyzer|Busmaster", dump_text, re.I):
+        report.checks.append(
+            CheckResult(
+                "CAN apps running",
+                None,
+                "CanKing/CANalyzer-like process detected — can block Leaf open (canIoCtl). "
+                "Quit CanKing (and CanKingService if stuck) before Connect",
+            )
+        )
     local_ips = list_local_ipv4()
     if local_ips:
         report.checks.append(
@@ -793,6 +1065,16 @@ def build_report(
         "BMU on CAN must show traffic — if FAIL with 0 frames, BMU is likely OFF or on the wrong bus."
     )
 
+    if any(
+        c.name == "BMU on CAN (traffic)" and c.ok is False and "canIoCtl" in (c.detail or "")
+        for c in report.checks
+    ):
+        report.notes.append(
+            "canIoCtl Error -1: Leaf is seen by USB, but open fails (python-can 4.6 ioctl or "
+            "another app holds the channel). Close CanKing/CANalyzer, install current Kvaser "
+            "Drivers, or use a BTS build with python-can 4.5.0."
+        )
+
     if using_serial:
         report.notes.append(
             "COM = Windows name for USB virtual serial (not Ethernet). "
@@ -803,6 +1085,11 @@ def build_report(
         report.notes.append(
             "COM ports are present (Power Control style). "
             "If LAN fails, set ea.*.transport: serial and serial_port: auto in config."
+        )
+    else:
+        report.notes.append(
+            "Serial ports: (none) — see Lab dump section (PnP Ports, USB VID, problem devices, "
+            "SERIALCOMM). That evidence shows whether EA USB is missing vs driver-only."
         )
 
     report.notes.append(

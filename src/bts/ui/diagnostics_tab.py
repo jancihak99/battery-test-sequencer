@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from bts.diagnostics import DiagnosticReport, build_report
+from bts.diagnostics import DiagnosticReport, build_report, real_serial_ports
 from bts.ui.theme import BORDER, OK, TEXT, TEXT_DIM
 
 if TYPE_CHECKING:
@@ -81,6 +81,7 @@ class DiagnosticsTab(QWidget):
         self.btn_refresh.clicked.connect(self.refresh)
         self.btn_copy = QPushButton("Copy report")
         self.btn_copy.clicked.connect(self._copy)
+        self.btn_copy.setToolTip("Celý text včetně Lab dump — pošli z druhého PC")
         head.addWidget(title)
         head.addWidget(hint, 1)
         head.addWidget(self.btn_copy)
@@ -175,7 +176,7 @@ class DiagnosticsTab(QWidget):
         self._fill_tree(report)
         fails = sum(1 for c in report.checks if c.ok is False)
         self.status.setText(
-            f"Scan done · {len(report.usb)} USB · {len(report.serial_ports)} serial · "
+            f"Scan done · {len(report.usb)} USB · {len(real_serial_ports(report.serial_ports))} serial · "
             f"{fails} check(s) failed"
         )
 
@@ -227,6 +228,13 @@ class DiagnosticsTab(QWidget):
         for s in report.serial_ports:
             ser.addChild(QTreeWidgetItem([s.device, f"{s.description} · {s.hwid}"]))
         ser.setExpanded(True)
+
+        if report.lab_dump:
+            dump = QTreeWidgetItem(["Lab dump", f"{len(report.lab_dump)} lines"])
+            self.tree.addTopLevelItem(dump)
+            for line in report.lab_dump:
+                dump.addChild(QTreeWidgetItem(["·", line]))
+            dump.setExpanded(False)
 
         if report.notes:
             notes = QTreeWidgetItem(["Notes", ""])

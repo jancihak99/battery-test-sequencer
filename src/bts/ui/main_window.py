@@ -67,6 +67,7 @@ class MainWindow(QMainWindow):
     def __init__(self, cfg: AppConfig) -> None:
         super().__init__()
         self.cfg = cfg
+        self._app_version = "0.0.0"
         self.setWindowTitle("Battery Test Sequencer | EBZ nano power")
         self.resize(1400, 860)
         self._apply_window_icon()
@@ -88,6 +89,7 @@ class MainWindow(QMainWindow):
         self._build_settings_tab()
         self._build_diagnostics_tab()
         self._build_branding_bar()
+        self._refresh_version_ui()
         self._update_mock_banner()
 
         self._reload_lists()
@@ -106,7 +108,7 @@ class MainWindow(QMainWindow):
             self.setWindowIcon(icon)
 
     def _build_branding_bar(self) -> None:
-        """Subtle footer: company logo + internal-tool notice."""
+        """Subtle footer: company logo + version + internal-tool notice."""
         bar = QStatusBar()
         bar.setSizeGripEnabled(False)
         bar.setFixedHeight(36)
@@ -127,15 +129,36 @@ class MainWindow(QMainWindow):
             logo.setText("EBZ nano power")
             logo.setStyleSheet(f"color:{TEXT_DIM};font-size:11px;")
 
+        self.lbl_status_version = QLabel("")
+        self.lbl_status_version.setStyleSheet("color:#8a96a3;font-size:11px;")
+        self.lbl_status_version.setToolTip("Verze aplikace (VERSION) — po update se změní")
+        self.lbl_status_version.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
         notice = QLabel("Internal tool  ·  not for distribution")
         notice.setStyleSheet("color:#8a96a3;font-size:11px;")
         notice.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
         row.addWidget(logo, 0, Qt.AlignVCenter)
         row.addStretch(1)
+        row.addWidget(self.lbl_status_version, 0, Qt.AlignVCenter)
         row.addWidget(notice, 0, Qt.AlignVCenter)
         wrap.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         bar.addWidget(wrap, 1)
+
+    def _refresh_version_ui(self, version: str | None = None) -> None:
+        """Keep title / status bar / Settings in sync (for update checks)."""
+        from bts.version import read_version
+
+        ver = (version or read_version(self.cfg.root) or "0.0.0").strip()
+        self._app_version = ver
+        self.setWindowTitle(f"Battery Test Sequencer | EBZ nano power · v{ver}")
+        if hasattr(self, "lbl_status_version"):
+            self.lbl_status_version.setText(f"v{ver}")
+            self.lbl_status_version.setToolTip(
+                f"Battery Test Sequencer {ver}\nSoubor VERSION v instalaci — ověření update."
+            )
+        if hasattr(self, "lbl_app_version"):
+            self.lbl_app_version.setText(f"Verze: {ver}")
 
     def _load_ebz_logo_pixmap(self, height: int = 22) -> QPixmap | None:
         """Load the official EBZ nano power logo (HiDPI-aware). Never substitute a redraw."""
@@ -656,7 +679,7 @@ class MainWindow(QMainWindow):
             self.lbl_update_status.setText(result.error)
             QMessageBox.warning(self, "Aktualizace", result.error)
             return
-        self.lbl_app_version.setText(f"Verze: {result.local_version}")
+        self._refresh_version_ui(result.local_version)
         if result.update_available and result.release:
             self._pending_release = result.release
             self.btn_apply_update.setEnabled(True)
@@ -725,8 +748,7 @@ class MainWindow(QMainWindow):
             if result.error:
                 self.lbl_update_status.setText(result.error)
                 return
-            if hasattr(self, "lbl_app_version"):
-                self.lbl_app_version.setText(f"Verze: {result.local_version}")
+            self._refresh_version_ui(result.local_version)
             if not (result.update_available and result.release and result.remote_version):
                 self.lbl_update_status.setText(result.message or f"Aktuální verze {result.local_version}")
                 return
