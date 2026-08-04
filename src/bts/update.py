@@ -189,9 +189,8 @@ def check_for_update(root: Path) -> UpdateCheckResult:
                 remote_version=None,
                 update_available=False,
                 error=(
-                    f"GitHub API {exc.code} — private repo, v appce chybí vestavěný update token. "
-                    f"Nainstaluj aktuální BTS-Setup.exe (token je uvnitř releasu), "
-                    f"nebo jednorázově soubor {TOKEN_FILENAME}."
+                    f"GitHub API {exc.code} — nelze číst Releases. "
+                    f"Repo by mělo být public (jancihak99/battery-test-sequencer); zkontroluj síť."
                 ),
             )
         return UpdateCheckResult(

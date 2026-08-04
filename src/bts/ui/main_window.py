@@ -581,7 +581,7 @@ class MainWindow(QMainWindow):
         form.addRow(
             QLabel(
                 "Při startu apka sama zkontroluje GitHub Releases a nabídne update. "
-                "Token pro private repo je vestavěný v releasu — na lab PC nic nevyplňuješ."
+                "Repo je public — na lab PC nic nevyplňuješ (žádný token)."
             )
         )
         try:
@@ -602,9 +602,8 @@ class MainWindow(QMainWindow):
         self.ed_github_repo = QLineEdit(ucfg.github_repo if ucfg else "jancihak99/battery-test-sequencer")
         form.addRow("GitHub repo", self.ed_github_repo)
         self.lbl_update_auth = QLabel(
-            f"Přístup k private repo: OK ({tok_src})"
-            if has_tok
-            else "Přístup k private repo: chybí — nainstaluj aktuální Setup / release"
+            "Přístup k Releases: public repo (token netřeba)"
+            + (f" · override {tok_src}" if has_tok else "")
         )
         self.lbl_update_auth.setStyleSheet(f"color:{TEXT_DIM};")
         form.addRow(self.lbl_update_auth)

@@ -1,5 +1,4 @@
-# Auto-update from private GitHub Releases.
-# Auth token is embedded into the app on publish (lab PCs do not enter a PAT).
+# Auto-update from GitHub Releases (public repo — no PAT required on lab PCs).
 github_repo: jancihak99/battery-test-sequencer
 check_on_startup: true
 auto_prompt_install: true
