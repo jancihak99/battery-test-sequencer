@@ -1,7 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-# From repo root:
-#   .venv\Scripts\pyinstaller --noconfirm --distpath installer --workpath scripts\setup_exe\build scripts\setup_exe\BTS-Setup.spec
-# Paths below are relative to this .spec file (scripts/setup_exe/).
+# Paths relative to this .spec (scripts/setup_exe/).
 
 block_cipher = None
 
@@ -11,6 +9,7 @@ a = Analysis(
     binaries=[],
     datas=[
         ('bts_app_icon.ico', '.'),
+        ('bts_payload.zip', '.'),
     ],
     hiddenimports=[],
     hookspath=[],
@@ -35,7 +34,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     runtime_tmpdir=None,
     console=False,
@@ -45,4 +44,5 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon='bts_app_icon.ico',
+    version='file_version_info.txt',
 )

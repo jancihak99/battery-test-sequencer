@@ -1,4 +1,4 @@
-# Battery Test Sequencer
+﻿# Battery Test Sequencer
 
 Windows desktop app for automating LTO module capacity / DCIR tests with:
 
@@ -10,54 +10,35 @@ Private source + updates: `jancihak99/battery-test-sequencer` (GitHub).
 
 ## Install on another PC
 
-**Pošli jeden soubor:** `installer\BTS-Setup.exe` (ikona apky).
+**Pošli jeden soubor:** `installer\BTS-Setup.exe` (~260 MB, ikona apky, klasický průvodce).
 
-Na cílovém PC: Python 3.10+ + Git → dvojklik → PAT / `gh auth` → Nainstalovat.
+- První instalace je **offline** — aktuální verze je uvnitř instalátoru (žádný GitHub).
+- Pozdější aktualizace apka stáhne z GitHub Releases.
+- Windows SmartScreen může poprvé varovat (nepodepsaný exe) — Další informace → Přesto spustit.
 
-Znovu sestavit exe: `scripts\setup_exe\build_setup_exe.bat`
+Znovu sestavit: `scripts\setup_exe\build_setup_exe.bat`
 
 ## Auto-update
 
-**Na PC zákazníka to běží samo:** při startu apka zeptá GitHub Releases, pozná novější verzi a nabídne „Stáhnout a nainstalovat“. Token z instalace použije sama.
+**Na PC zákazníka:** při startu apka zeptá GitHub Releases a nabídne instalaci nové verze.
 
-**Ty (vývojář)** jen nahraješ update:
+**Ty (vývojář)** nahraješ update:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\publish_release.ps1
 ```
 
-(bump `VERSION` → tag → GitHub Release). Pak stačí na lab PC apku znovu otevřít.
+Pak znovu sestav a nahraj `BTS-Setup.exe` k release (nebo jen tag — už nainstalované PC berou update z GitHubu).
+
 ## Quick start (dev machine)
 
-Double-click **`Start BTS.bat`** (or `Start BTS.vbs`) in the project folder.
-
-Or from PowerShell:
-
-```powershell
-cd C:\Users\janci\Downloads\battery-test-sequencer
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-pip install -e .
-python main.py
-```
-
-**Default lab config** (`config/default.yaml`):
-
-- `use_mock_hardware: false` — live hardware
-- EA: `transport: serial`, `serial_port: auto` (*IDN? discovery)
-- Kvaser channel / bitrate / BMU + App addresses as in YAML (editable in **Nastavení**)
-
-For offline UI work without instruments: enable **Use mock hardware** in Nastavení.
-
-Smoke / mock-only recipes live in `programs/dev/` and appear as `[DEV/MOCK] …`.
+Double-click **`Start BTS.bat`** in the project folder.
 
 ## Safety
 
 - CAN / EA watchdogs force EA off; IDLE only after current ≈ 0
-- **Stop (Esc):** EA off → dwell → I≈0 → hold → IDLE (if I stays high, contactors stay CLOSED)
+- **Stop (Esc):** EA off → dwell → I≈0 → hold → IDLE
 - **External dropout:** COM loss or EL master/slave half-current → `EXT FAIL` + safe path
-- **Source/load mutex:** PSI and EL must never be ON together
 
 ## Lab checklist
 
