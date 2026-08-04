@@ -1,0 +1,70 @@
+ 
+18 
+nano power a. s., Tiskařská 599/12, 108 00 Praha 10 – Malešice, 
+IČO: 01719041, DIČ: CZ01719041 
+ 
+5.2.3 
+0X18FF02XX – VMIN / VMAX MESSAGE 
+The BMU transmits the Minimum and Maximum Cell Voltages and respective cell ID. 
+ 
+CAN-ID 
+Data 0 
+Data 1 
+Data 2 
+Data 3 
+Data 4 
+Data 5 
+Data 6 
+Data 7 
+0x18FF02xx 
+Vmin 
+Vmax 
+Vmin-ID 
+Vmax-ID 
+ 
+(a) Vmin – defined as the minimum of the cell voltages.  See section 5.1 for range and 
+resolution. 
+(b) Vmax – defined as the maximum of the cell voltages.  See section 5.1 for range and 
+resolution. 
+(c) Vmin ID – defined as the ID of the cell-group whose voltage is smallest, MSB first. 
+(d) Vmax ID – defined as the ID of the cell-group whose voltage is largest, MSB first. 
+(e) If a cell voltage is out of range or its LMU is not reporting, its value will not be included 
+in the calculation of minimum and maximum.  A DTC flag will be set for any events 
+where a measurement has been omitted from this message because it is out of range 
+or LMU not reporting. 
+(f) Transmit Period: 100 milliseconds. 
+ 
+5.2.4 
+0X18FF03XX – TMIN / TMAX MESSAGE 
+The BMU transmits the Average Temperature, Minimum and Maximum Temperature and 
+respective temperature ID. 
+ 
+CAN-ID 
+Data 0 
+Data 1 
+Data 2 
+Data 3 
+Data 4 
+Data 5 
+Data 6 
+Data 7 
+0x18FF03xx 
+Tmin 
+Tmax 
+Taverage 
+TminID 
+TmaxID 
+ 
+(a) Tmin – defined as the minimum of the measured battery temperatures. See section 
+5.1 for range and resolution. 
+(b) Tmax – defined as the maximum of the measured battery temperatures. See section 
+5.1 for range and resolution. 
+(c) Taverage – defined as the average of the measured battery temperatures. See 
+section 5.1 for range and resolution. 
+(d) Tmin ID – defined as the ID of the temperature measurement which is smallest. 
+(e) Tmax ID – defined as the ID of the temperature measurement which is largest. 
+(f) If a temperature is reported out of range or LMU not reporting, its value will not be 
+included in the calculation of minimum, maximum, and average.  A DTC flag will be 
+set for any events where a measurement has been omitted from this message 
+because it is out of range or LMU not reporting. 
+(g) Transmit period:  1 second 

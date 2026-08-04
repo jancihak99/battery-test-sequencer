@@ -1,0 +1,25 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VER="${GITHUB_REF_NAME}"
+          NOTES="Battery Test Sequencer ${VER}"
+          if [ -f VERSION ]; then
+            NOTES="BTS $(cat VERSION) — pull via installer/Update-BTS.ps1 or in-app Aktualizace."
+          fi
+          gh release create "$VER" --title "BTS $VER" --notes "$NOTES" || true

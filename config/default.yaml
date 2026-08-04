@@ -1,0 +1,51 @@
+# Hardware and bus configuration for Battery Test Sequencer
+use_mock_hardware: false
+
+bms:
+  interface: kvaser
+  channel: 0
+  bitrate: 250000
+  bmu_address: 0x03          # candidates: 0x00 … 0x03
+  app_address: 0x20          # ACU/App (spec default). Service Tool often 0xF9
+  heartbeat_period_ms: 100
+  request_cell_voltages: true   # App Command bit1 — BMU streams 0x18FF10xx+
+  request_temperatures: true    # App Command bit2 — 0x18FF90xx+
+  request_cell_balance: true    # App Command bit3 — 0x18FFD0xx+
+
+ea:
+  psi:
+    name: PSI_9080_340
+    transport: serial
+    serial_port: auto
+    baudrate: 115200
+    host: 192.168.0.2
+    port: 5025
+    max_voltage_v: 80.0
+    max_current_a: 340.0
+
+  el:
+    name: EL_MS_9080_1020B
+    transport: serial
+    serial_port: auto
+    baudrate: 115200
+    host: 192.168.0.3
+    port: 5025
+    max_voltage_v: 80.0
+    max_current_a: 1020.0
+
+safety:
+  can_timeout_s: 1.0
+  ea_timeout_s: 2.0
+  abort_dtc_level: 3
+  poll_period_ms: 200
+  # EL master/slave: if one unit drops, combined I ≈ half of CURR setpoint
+  ea_i_mismatch_min_set_a: 40.0
+  ea_i_slave_ratio_lo: 0.35
+  ea_i_slave_ratio_hi: 0.65
+  ea_i_collapse_ratio: 0.15
+  ea_i_mismatch_confirm_s: 2.0
+
+paths:
+  profiles_dir: profiles
+  programs_dir: programs
+  runs_dir: runs

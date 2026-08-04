@@ -1,0 +1,29 @@
+meta:
+  name: Fail_EL_slave_mock
+  module_profile: LTO_24V_70Ah
+  description: >-
+    DEV only — simuluje výpadek jedné ze dvou EL zátěží (master/slave).
+    Po ~4 s discharge klesne proud na ≈½ setpointu; engine musí FAIL
+    s EXT FAIL a bezpečně EA off → I≈0 → IDLE. Zapni mock hardware.
+
+steps:
+  - id: ready
+    type: bms_ready
+    timeout_s: 30
+
+  - id: discharge_ms_fail
+    type: discharge
+    current_a: 200
+    # MockEaRack only — ignored on live HW
+    mock_inject_fault: el_slave_lost
+    mock_inject_after_s: 4
+    stop:
+      ah_target: 50
+      pack_v_min: 17.0
+      timeout_s: 60
+    abort:
+      dtc_level_max: 3
+
+  - id: idle
+    type: bms_idle
+    timeout_s: 30

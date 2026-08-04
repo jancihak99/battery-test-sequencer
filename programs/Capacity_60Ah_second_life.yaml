@@ -1,0 +1,65 @@
+meta:
+  name: Capacity_60Ah_second_life
+  module_profile: LTO_24V_60Ah
+  description: "Capacity test for 60Ah second-life modules."
+
+steps:
+  - id: ready
+    type: bms_ready
+    timeout_s: 60
+
+  # Let mains finish closing / switched bus settle before PSI on
+  - id: settle_after_ready
+    type: wait_time
+    seconds: 10
+
+  - id: charge_full
+    type: charge
+    current_a: 60
+    voltage_v: 27.0
+    stop:
+      pack_v_max: 27.0
+      cell_v_max: 2.75
+    abort:
+      t_max_c: 50
+      dtc_level_max: 2
+
+  - id: settle_after_charge
+    type: wait_time
+    seconds: 5
+
+  - id: wait_cool
+    type: wait_temp
+    t_max_c: 35
+    timeout_s: 7200
+
+  - id: settle_before_discharge
+    type: wait_time
+    seconds: 5
+
+  - id: discharge_cap
+    type: discharge
+    current_a: 60
+    stop:
+      pack_v_min: 17.0
+      cell_v_min: 1.5
+    abort:
+      t_max_c: 50
+      dtc_level_max: 2
+    measure: capacity_ah
+
+  - id: settle_after_discharge
+    type: wait_time
+    seconds: 5
+
+  - id: report
+    type: report
+    include: [capacity_ah, cells, temps, dtc]
+
+  - id: notify_done
+    type: notify
+    message: "60Ah capacity test complete."
+
+  - id: idle
+    type: bms_idle
+    timeout_s: 30

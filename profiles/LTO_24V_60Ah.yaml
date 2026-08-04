@@ -1,0 +1,21 @@
+id: LTO_24V_60Ah
+name: "24V 60Ah second-life LTO module"
+nominal_capacity_ah: 60.0
+min_capacity_ah: 60.0
+typical_capacity_ah: 60.0
+pack_v_min: 17.0
+pack_v_max: 27.5
+# Datasheet temperature-dependent cutoffs (conservative defaults for room temp)
+discharge_cutoff_v_cold: 17.0   # -40..+30 C
+discharge_cutoff_v_hot: 19.0    # +30..+55 C
+charge_cutoff_v_warm: 27.0      # +20..+55 C
+charge_cutoff_v_cold: 27.5      # -40..+20 C
+cell_v_min: 1.5
+cell_v_max: 2.75
+t_min_c: -40.0
+t_max_c: 55.0
+max_continuous_current_a: 360.0
+default_test_current_a: 60.0
+dcir_pulse_a: 300.0
+dcir_pulse_s: 10.0
+notes: "Second-life / older modules. Enforce BMS cell limits."

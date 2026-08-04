@@ -1,0 +1,74 @@
+meta:
+  name: Capacity_70Ah_claim
+  module_profile: LTO_24V_70Ah
+  description: "Full charge, cool, capacity discharge, optional DCIR, report, idle."
+
+steps:
+  - id: ready
+    type: bms_ready
+    timeout_s: 60
+
+  - id: settle_after_ready
+    type: wait_time
+    seconds: 10
+
+  - id: charge_full
+    type: charge
+    current_a: 70
+    voltage_v: 27.5
+    stop:
+      pack_v_max: 27.5
+      cell_v_max: 2.75
+    abort:
+      t_max_c: 55
+      dtc_level_max: 2
+
+  - id: settle_after_charge
+    type: wait_time
+    seconds: 5
+
+  - id: wait_cool
+    type: wait_temp
+    t_max_c: 35
+    timeout_s: 7200
+
+  - id: settle_before_discharge
+    type: wait_time
+    seconds: 5
+
+  - id: discharge_cap
+    type: discharge
+    current_a: 70
+    stop:
+      pack_v_min: 17.0
+      cell_v_min: 1.5
+    abort:
+      t_max_c: 55
+      dtc_level_max: 2
+    measure: capacity_ah
+
+  - id: settle_before_dcir
+    type: wait_time
+    seconds: 5
+
+  - id: dcir
+    type: dcir
+    pulse_a: 300
+    pulse_s: 10
+    soc_ref_pct: 50
+
+  - id: settle_after_dcir
+    type: wait_time
+    seconds: 5
+
+  - id: report
+    type: report
+    include: [capacity_ah, dcir_mohm, cells, temps, dtc]
+
+  - id: notify_done
+    type: notify
+    message: "Test complete — capacity recorded, contactors will open."
+
+  - id: idle
+    type: bms_idle
+    timeout_s: 30

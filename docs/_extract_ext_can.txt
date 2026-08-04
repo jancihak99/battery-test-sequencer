@@ -1,0 +1,1914 @@
+\n===== PAGE 1 =====\n 
+1 
+nano power a. s., Tiskařská 599/12, 108 00 Praha 10 – Malešice, 
+IČO: 01719041, DIČ: CZ01719041 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+BMU v3 External CAN 
+Interface Specification 
+ 
+ 
+ 
+ 
+Document Number: 3342943 
+Document Version: 16 
+ 
+Interface Version:  0x0A 
+ 
+ 
+ 
+ 
+\n===== PAGE 2 =====\n 
+2 
+nano power a. s., Tiskařská 599/12, 108 00 Praha 10 – Malešice, 
+IČO: 01719041, DIČ: CZ01719041 
+ 
+Table of Contents 
+1.0 
+Scope .......................................................................................................................................... 3 
+2.0 
+Terminology ................................................................................................................................. 5 
+3.0 
+General Requirements ................................................................................................................ 6 
+3.1 
+BMU Communication Options .................................................................................................. 6 
+3.2 
+DTC Accommodation Levels .................................................................................................... 7 
+3.3 
+BMU Operating States ............................................................................................................. 7 
+3.4 
+“Disconnect Too Slow” E-Stop DTC ......................................................................................... 8 
+3.5 
+Sleep Mode .............................................................................................................................. 8 
+4.0 
+Handshaking Sequences ............................................................................................................ 9 
+4.1 
+Power up and Power down ...................................................................................................... 9 
+4.2 
+Contactor Control = Internal (bmu)........................................................................................... 9 
+4.2.1 
+Connect to Load ................................................................................................................... 9 
+4.2.2 
+BMU- Initiated Normal Disconnect ..................................................................................... 10 
+4.2.3 
+BMU- Initiated E-Stop Disconnect ...................................................................................... 10 
+4.2.4 
+Application-Initiated Disconnect ......................................................................................... 11 
+4.3 
+Contactor Control = External (ACU) ....................................................................................... 11 
+4.3.1 
+Connect to Load ................................................................................................................. 11 
+4.3.2 
+BMU- Initiated Disconnect .................................................................................................. 12 
+4.3.3 
+Application-Initiated Normal Disconnect ............................................................................ 12 
+4.3.4 
+Application-Initiated E-Stop Disconnect ............................................................................. 13 
+5.0 
+CAN Communication ................................................................................................................. 14 
+5.1 
+General ................................................................................................................................... 14 
+5.1.1 
+Scaling of Variables ............................................................................................................ 14 
+5.1.2 
+Data Error Codes................................................................................................................ 14 
+5.1.3 
+CAN IDs .............................................................................................................................. 14 
+5.2 
+CAN Message Summary ........................................................................................................ 15 
+5.2.1 
+0x18FF00xx – SOC Message ............................................................................................ 16 
+5.2.2 
+0x18FF01xx – Pack Voltage And Current Message .......................................................... 17 
+5.2.3 
+0x18FF02xx – Vmin / Vmax Message ............................................................................... 18 
+5.2.4 
+0x18FF03xx – Tmin / Tmax Message ................................................................................ 18 
+5.2.5 
+0x18FF04xx – DTC Message............................................................................................. 19 
+5.2.6 
+0x18FF05xx – BMU Configuration Message ..................................................................... 19 
+5.2.7 
+0x18FF06xx – Amp-Hour Message ................................................................................... 20 
+5.2.8 
+0x18FF07xx – BMU Configuration Operating Limits Message .......................................... 20 
+5.2.9 
+0x18FF10xx+ – Cell Voltage Message .............................................................................. 21 
+5.2.10 
+0x18FF90xx+ – Battery Temperature Message............................................................. 22 
+5.2.11 
+0x18FFD0xx+ – Cell-Balance Message ......................................................................... 23 
+5.2.12 
+0x18EFxxyy – Application Command Message ............................................................. 24 
+6.0 
+Multi-String Coordination ........................................................................................................... 25 
+6.1 
+Switchover in case of Multi-String Coordinator Failure .......................................................... 25 
+6.2 
+0x18FFE0xx – Multi-String SOC Message ............................................................................ 26 
+6.3 
+0x18FFE1xx – Multi-String Voltage And Current Message ................................................... 27 
+6.4 
+0x18FFE2xx – Multi-String VMin/VMax Message .................................................................. 27 
+6.5 
+0x18FFE3xx – Multi-String TMin/TMax Message .................................................................. 28 
+6.6 
+0x18EFxxyy – Multi-String Application Command Message ................................................. 29 
+7.0 
+Revision History ........................................................................................................................ 30 
+ 
+\n===== PAGE 3 =====\n 
+3 
+nano power a. s., Tiskařská 599/12, 108 00 Praha 10 – Malešice, 
+IČO: 01719041, DIČ: CZ01719041 
+ 
+ 
+1.0 SCOPE 
+The scope of this protocol covers the Protocol Version defined in the footer of this document. 
+Note: The protocol version was not upgraded between BMS v11 and v13 when the AUX IO 
+feature was added, however, the protocol remained backward compatible. 
+This document specifies the CAN communication between the Altairnano Battery 
+Management System (BMS) and an application to which it is to be connected.  The interface is 
+general purpose, with options for a given application. 
+The BMS electronics consist of two types of electronic units: the BMU (battery management 
+unit) and the LMU (local monitoring unit).  An ACU (application control unit) interfaces to the 
+BMU over an “external” CAN bus, while the BMU communicates to the LMU(s) over an 
+“internal”” CAN bus. 
+Altairnano also provides “BMS Service Tool” software for a personal computer which can be 
+used to communicate with the BMS for diagnostics, service, and reprogramming.  A PC-to-
+CAN adapter enables the PC to connect to the CAN bus; the PC-to-CAN adapter typically 
+connects to the PC over USB. 
+Application
+Control Unit
+BMU
+LMU
+…
+External CAN Bus
+CAN2.0B, configurable baud
+BMS Internal CAN Bus,
+CAN2.0B, 125 kbps
+Altairnano BMS 
+Service Tool
+(PC Software)
+LMU
+PC / CAN
+Adapter
+Altairnano
+Battery Management
+System (BMS)
+ 
+Figure 1 - BMS data communication architecture  
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+\n===== PAGE 4 =====\n 
+4 
+nano power a. s., Tiskařská 599/12, 108 00 Praha 10 – Malešice, 
+IČO: 01719041, DIČ: CZ01719041 
+ 
+ 
+Battery
+Pack
+B+, switched
+B-, switched
+B-
+B+
+Pre-Charge
+contactor
+Main (+)
+contactor
+External (+)
+contactor
+Main (-)
+contactor
+External (-)
+contactor
+BMU
+Single or dual-pickup
+current sensor
+Application
+Control Unit
+(ACU)
+Isolation 
+Fault
+Sensor
+External 
+pre-charge
+contactor
+BMU On/Off
+V_pack+
+V_pack-
+V_p,switched-
+V_p,switched+
+CAN-bus
+ 
+Figure 2 - BMU electrical connections 
+NOTE:  While the figure above shows two sets of contactors, any given application would be 
+configured to use one set or the other (i.e. BMU-controlled or Application-controlled), 
+not both. 
+Finally, this document also contains Section 6.0 on unique requirements for coordinating the 
+operation of several battery strings in parallel. 
+\n===== PAGE 5 =====\n 
+5 
+nano power a. s., Tiskařská 599/12, 108 00 Praha 10 – Malešice, 
+IČO: 01719041, DIČ: CZ01719041 
+ 
+2.0 TERMINOLOGY 
+Term 
+Meaning 
+ACU 
+Application Control Unit.  This is an electronic device which 
+forms the point of interface between the BMS and the outside 
+world. 
+BMS 
+Battery Management System.  In a single-string system, the 
+BMS refers to the entire system, including several 
+components: 
+• 
+BMU 
+• 
+One or more LMUs 
+• 
+Wiring harness 
+• 
+Thermistors mounted in and around the battery pack 
+• 
+Contactors, pre-charge circuit and other safety devices 
+ 
+In a multi-string system, the BMS refers to the collection of 
+BMUs, LMUs, etc. on multiple battery strings. 
+BMU 
+Battery Management Unit.  The BMU is the component of the 
+BMS responsible for core algorithms (state of charge, state of 
+health, cell balance, contactor control, and most diagnostics) 
+and for data communication with the ACU. 
+DTC 
+Diagnostic Trouble Code.  The BMU has built-in diagnostics, 
+which are algorithms to detect failures or extreme operating 
+conditions.  When a diagnostic algorithm indicates a problem 
+has been detected, it activates a DTC. 
+LMU 
+Local Monitoring Unit.  The LMU is the primary I/O device in 
+the BMS; it measures battery cell voltages and temperatures 
+and it contains the physical cell balance circuit. 
+ 
+\n===== PAGE 6 =====\n 
+6 
+nano power a. s., Tiskařská 599/12, 108 00 Praha 10 – Malešice, 
+IČO: 01719041, DIČ: CZ01719041 
+ 
+3.0 GENERAL REQUIREMENTS 
+3.1 
+BMU COMMUNICATION OPTIONS 
+The BMU shall support the following configuration parameters.  These options are pre-
+selected for a given application; the BMU must be re-flashed to set these options. 
+ 
+Parameter 
+Possible Values 
+Description 
+External CAN baud rate 
+125, 250, or 500 kbps 
+Baud rate used on the control unit’s 
+external CAN bus. 
+BMU CAN Address 
+0x00 to 0xFD default value= 
+0x03 
+Multi-string= 0x00 
+The J1939 source address to be used 
+by the BMU on the external CAN bus. 
+In multi-string configurate set to 0x00 
+and controlled by Identity Mask. 
+ACU CAN Address 
+0x00 to 0xFD 
+Defaults to 0x20 
+The J1939 external CAN source 
+address to be used by the ACU. 
+Number of Strings 
+1-6 
+Default = 1 
+The number of strings in the system 
+(on the External CAN bus) 
+Multi-string Identity mask 
+0-3 IO Discrete Pins 
+Default = 0 disabled 
+The IO pins used to determine the 
+External CAN Address of the BMU. 
+ACU Timeout logic 
+0 – Disabled 
+1 – ACU Command 
+2 – Application Heartbeat 
+Default = 1 
+The logic to use to determine 
+communication timeout FC103. 
+ACU Timeout period 
+250msec, 500msec, 1 second 
+Default = 1 second 
+The amount of time elapsed before 
+the BMU generates FC103 when 
+Timeout Logic is ACU command. 
+Heartbeat Timeout 
+0- milliseconds 
+Default = 10000msec 
+The amount of time elapsed before 
+the BMU generates FC103 when 
+Timeout Logic is Heartbeat. 
+Desired State 
+0 – Do not use ACU Command 
+1 – Use ACU Command 
+Default = 1 
+ 
+How to determine the desired 
+operating state (Ready, Idle, etc.).  
+\n===== PAGE 7 =====\n 
+7 
+nano power a. s., Tiskařská 599/12, 108 00 Praha 10 – Malešice, 
+IČO: 01719041, DIČ: CZ01719041 
+ 
+3.2 
+DTC ACCOMMODATION LEVELS 
+The BMU tracks the current DTC status (active or inactive) internally. Each DTC status has an 
+associated DTC Accommodation Level. The highest severity is reported by the BMU and are 
+defined as follows: 
+ 
+Level 
+DTC Accommodation 
+Description 
+0 
+Normal 
+No active DTCs 
+1 
+Warning 
+A warning-level DTC is active, but no action taken to 
+accommodate 
+2 
+Derate 
+Indicates the Charge and Discharge current limits are 
+derated as a result of an active DTC. 
+3 
+Disconnect 
+BMU goes through orderly disconnect sequence 
+4* 
+Emergency Stop (E-stop) 
+BMU disconnects immediately, even if non-zero 
+current. 
+*The E-stop level causes the contactor to open immediately, even if current is flowing.  This 
+could potentially damage the contactor; consequently, the E-Stop DTC accommodation level 
+must only be used for DTCs that truly represent an emergency. 
+ 
+3.3 
+BMU OPERATING STATES 
+The BMU utilizes a finite state machine to coordinate its operating state with the ACU. The 
+application’s desired BMU “steady state” is always IDLE, READY, or POWER-DOWN-
+READY.  The other states are “transient”, meaning the BMU only stays in those states 
+temporarily while transitioning to a steady state. 
+ 
+ 
+ 
+ 
+ 
+\n===== PAGE 8 =====\n 
+8 
+nano power a. s., Tiskařská 599/12, 108 00 Praha 10 – Malešice, 
+IČO: 01719041, DIČ: CZ01719041 
+ 
+The BMU shall transition from state-to-state when the conditions in the following table are met. 
+State Transitions 
+# 
+From State 
+To State 
+Condition for Transition 
+Action in new state 
+T1 
+POWER-UP 
+IDLE 
+Power-up self-test complete 
+- 
+T2 
+IDLE 
+PRE-CHARGE 
+(App Command = READY) AND (no 
+active Level 3 or 4 DTCs) AND (in 
+IDLE state for at least a configurable 
+time delay, nominally 2 seconds) 
+Connect pre-charge relay, run 
+contactor diagnostics, and 
+engage primary contactor(s) 
+T3 
+PRE-CHARGE 
+IDLE 
+(A Level 3 or 4 DTC becomes active 
+during Pre-Charge) OR  
+(App Command  READY) 
+- 
+T4 
+PRE-CHARGE 
+READY 
+(Contactor control = App) OR 
+(Pre-charge sequence complete)  
+- 
+T5 
+READY 
+STOPPING 
+(A Level 3 or 4 DTC becomes active) 
+OR (App Command is anything other 
+than READY) 
+If using Contactor control = BMU, 
+wait for current less than 5% of 
+full scale, then disengage main 
+contactor(s) and run contactor 
+diagnostics 
+T6 
+STOPPING 
+IDLE 
+(Contactor control = App) OR (Main 
+contactor(s) disengaged) OR (a Level 
+4 DTC is active) 
+- 
+T7 
+POWER-
+DOWN 
+READY 
+POWER-UP 
+App Command is not POWER-DOWN-
+READY (after a minimum period of 1 
+second) AND (not impending BMU 
+failure) 
+- 
+T8 
+IDLE 
+POWER-DOWN 
+PREP 
+(App Command = POWER-DOWN 
+READY) OR (impending BMU failure) 
+Save non-volatile data. 
+T9 
+POWER-
+DOWN PREP 
+POWER-DOWN 
+READY 
+Completed saving non-volatile data 
+- 
+If the Contactor control = External, the pre-charge sequence is treated as completed 
+immediately. 
+While in the POWER-DOWN-PREP or POWER-DOWN-READY state, the BMU will continue 
+transmitting the SOC message at the normal rate, however, it may not transmit the other 
+messages. 
+ 
+3.4 
+“DISCONNECT TOO SLOW” E-STOP DTC 
+If the BMU is in the STOPPING state for longer than a timeout period (approximately 5 
+seconds), the BMU shall activate a Level 4 (E-STOP) DTC (“Disconnect too slow”). 
+ 
+3.5 
+SLEEP MODE 
+The “Sleep Mode” is an ultra-low-power mode in which the BMU’s power supply is on but the 
+BMS does not perform any calculations or send any CAN messages, and in which all outputs 
+are put into their passive (unpowered) state.  It essentially means the BMU and LMUs have 
+powered themselves off under software control. 
+The BMU enters “Sleep Mode” within 10 seconds in POWER-DOWN-READY state. 
+\n===== PAGE 9 =====\n 
+9 
+nano power a. s., Tiskařská 599/12, 108 00 Praha 10 – Malešice, 
+IČO: 01719041, DIČ: CZ01719041 
+ 
+4.0 HANDSHAKING SEQUENCES 
+4.1 
+POWER UP AND POWER DOWN 
+If the “BMU On/Off” input transitions from low to high while the BMU is in “sleep mode”, then 
+the BMU shall exit “sleep mode” and enter POWER-UP state. 
+If the BMU power supply and the “BMU On/Off” input transitions from low to high at the same 
+time, the BMU shall enter the POWER-UP state. 
+[If configured to sleep when “BMU On/Off” is OFF] When the BMU is powered and the “BMU 
+On/Off” input is in the low state, the BMU shall act as though the “BMU Desired State” is 
+POWER-DOWN-READY, regardless of the value in the Application Command Message. 
+When the BMU is powered and the “BMU On/Off” input is in the high state, the BMU shall 
+follow the “BMU Desired State” from the Application Command Message per state transition 
+logic specified in this document. 
+ 
+4.2 
+CONTACTOR CONTROL = INTERNAL (BMU) 
+The sequences in this section apply to configurations where the BMU controls the contactor. 
+ 
+4.2.1 
+CONNECT TO LOAD 
+The following sequence of events shall occur when connecting using BMU contactor control. 
+ACU
+BMU
+Set “desired BMU state” = READY
+Precharge
+Close main(+) contactor
+Set “BMU state” = READY
+Set “BMU state” = PRECHARGE
+“BMU state” = IDLE
+Start sourcing or sinking current
+Stop current sensor auto-zero
+ 
+\n===== PAGE 10 =====\n 
+10 
+nano power a. s., Tiskařská 599/12, 108 00 Praha 10 – Malešice, 
+IČO: 01719041, DIČ: CZ01719041 
+ 
+4.2.2 
+BMU- INITIATED NORMAL DISCONNECT 
+The following sequence of events shall be used when the BMU initiates a normal (non-
+emergency) disconnect sequence when configured for BMU contactor control.  The normal 
+disconnect sequence occurs in response to Level 3 (“Disconnect”) DTCs.  The E-Stop 
+disconnect sequence occurs in response to Level 4 (“E-Stop”) DTCs. 
+This sequence ensures the load current is low before the BMU opens the contactor. 
+ACU
+BMU
+Set current demand to 0 Amps
+Level 3 Fault is detected
+Open contactors
+Set “BMU state” = IDLE
+Set “BMU state” = STOPPING
+“BMU state” = READY
+Wait for low sensed current
+Start current sensor auto-zero
+ 
+ 
+4.2.3 
+BMU- INITIATED E-STOP DISCONNECT 
+The following sequence of events shall be used when the BMU initiates an emergency 
+disconnect sequence when configured for BMU contactor control.  The emergency disconnect 
+sequence occurs in response to Level 4 (“E-Stop”) DTCs.  The normal disconnect sequence 
+occurs in response to Level 3 (“Disconnect”) DTCs. 
+In this sequence the BMU attempts to open the contactor without regard to the load current. 
+ACU
+BMU
+Level 4 Fault is detected
+Open contactors
+Set “BMU state” = IDLE
+Set “BMU state” = STOPPING
+“BMU state” = READY
+Start current sensor auto-zero
+ 
+\n===== PAGE 11 =====\n 
+11 
+nano power a. s., Tiskařská 599/12, 108 00 Praha 10 – Malešice, 
+IČO: 01719041, DIČ: CZ01719041 
+ 
+4.2.4 
+APPLICATION-INITIATED DISCONNECT 
+The following sequence of events shall be used when the Application initiates a disconnect 
+sequence when configured for BMU contactor control.  Application-initiated disconnect 
+sequence is the same regardless of the severity of the condition which required disconnect. 
+This sequence ensures the load current is low before the BMU opens the contactor. 
+ACU
+BMU
+Open contactors
+Set “BMU state” = IDLE
+Set “BMU state” = STOPPING
+Wait for low sensed current
+Set current demand to 0 Amps
+Set “desired state” = IDLE
+Start current sensor auto-zero
+ 
+4.3 
+CONTACTOR CONTROL = EXTERNAL (ACU) 
+The sequences in this section apply to configurations where the Application controls the 
+contactor.   
+4.3.1 
+CONNECT TO LOAD 
+The following sequence of events shall occur when connecting using application contactor 
+control. The sequence can apply to either the primary or the secondary contactor. 
+ACU
+BMU
+Set “desired state” = READY
+Precharge
+Close contactor
+Set “BMU state” = READY
+“BMU state” = IDLE
+Start sourcing or sinking current
+Set “external contactor state” = CLOSED
+Stop current-sensor auto-zero
+ 
+ 
+\n===== PAGE 12 =====\n 
+12 
+nano power a. s., Tiskařská 599/12, 108 00 Praha 10 – Malešice, 
+IČO: 01719041, DIČ: CZ01719041 
+ 
+4.3.2 
+BMU- INITIATED DISCONNECT 
+The following sequence of events shall be used when the BMU initiates a disconnect 
+sequence (non-emergency or emergency) when configured for Application contactor control.  
+The same disconnect sequence is used regardless of the DTC level which caused the BMU to 
+initiate the disconnect. 
+This sequence ensures the load current is low before the Application opens the contactor. 
+ACU
+BMU
+Set current demand to 0 Amps
+Level 3 Fault is detected
+Open contactor
+Set “external contactor state” = OPEN
+“BMU state” = READY
+Wait for low sensed current
+Start current sensor auto-zero
+“BMU state” = IDLE
+ 
+ 
+4.3.3 
+APPLICATION-INITIATED NORMAL DISCONNECT 
+The following sequence of events shall be used when the Application initiates a normal (non-
+emergency) disconnect sequence when configured for Application contactor control.  The 
+emergency disconnect sequence occurs in response to Level 4 (“E-Stop”) DTCs.  The normal 
+disconnect sequence occurs in response to Level 3 (“Disconnect”) DTCs. 
+This sequence ensures the load current is low before the Application opens the contactor. 
+ACU
+BMU
+Open contactor
+Set “BMU state” = IDLE
+Wait for low sensed current
+Set current demand to 0 Amps
+Set “desired state” = IDLE
+Start current sensor auto-zero
+Set “external contactor state” = OPEN
+ 
+\n===== PAGE 13 =====\n 
+13 
+nano power a. s., Tiskařská 599/12, 108 00 Praha 10 – Malešice, 
+IČO: 01719041, DIČ: CZ01719041 
+ 
+4.3.4 
+APPLICATION-INITIATED E-STOP DISCONNECT 
+The following sequence of events shall be used when the Application initiates an emergency 
+disconnect sequence when configured for Application contactor control.  The emergency 
+disconnect sequence occurs in response to Level 4 (“E-Stop”) DTCs.  The normal disconnect 
+sequence occurs in response to Level 3 (“Disconnect”) DTCs. 
+In this sequence, the Application opens the contactor without regard to the load current. 
+ACU
+BMU
+Open contactor
+Set “BMU state” = IDLE
+Set “BMU state” = E-STOP
+Set current demand to 0 Amps
+Set “desired state” = E-STOP
+Start current sensor auto-zero
+Set “external contactor state” = OPEN
+ 
+ 
+\n===== PAGE 14 =====\n 
+14 
+nano power a. s., Tiskařská 599/12, 108 00 Praha 10 – Malešice, 
+IČO: 01719041, DIČ: CZ01719041 
+ 
+5.0 CAN COMMUNICATION 
+5.1 
+GENERAL 
+The following describes general information utilized when working with the communication 
+protocol. 
+5.1.1 
+SCALING OF VARIABLES 
+(a) Cell-Group Voltages are unsigned, 16-bit, MSB-first, with a resolution of 1/8192 V 
+(122 V) per bit.  The valid range of values is 0 – 4v.  See Section Data Error Codes 
+error response codes. 
+(b) Temperatures are signed, 16-bit, MSB-first, with a resolution of 1/64 deg C (0.015625 
+deg C) per bit.  The valid range of values is -200 to +200 C. See Section Data Error 
+Codes error response codes. 
+(c) Pack voltages are signed, 16-bit, MSB-first, with a resolution of 1/16 V (62.5 mV) per 
+bit.  The valid range of values is 0 – 2047v.  See Section Data Error Codes error 
+response codes. 
+(d) Current values are signed, 16-bit, MSB-first, with a resolution of 1/8 Amp (0.125 A) 
+per bit.  The valid range is -4000 Amps to +4000 Amps.  Positive is charging; negative 
+is discharging.  See Section Data Error Codes error response codes. 
+(e) SOC values are unsigned, 8-bit, with a resolution of 0.5% per bit.  A value of 0xFF is 
+used to indicate the value is “Unknown”. 
+5.1.2 
+DATA ERROR CODES 
+The following data error codes indicate that a value is unknown for a particular reason. For 
+variables that contain negative values remember that those values will have the highest bit 
+set. Therefore, a value of 0x8000 and greater can be valid. 
+ 
+Error Response Codes 
+Value 
+SENSOR_LMU_NOT_REPORTING 
+0x7FFF 
+SENSOR_INPUT_OOR_LOW 
+0x7FFE 
+SENSOR_MCU_CIRCUIT_FAILURE 
+0x7FFD 
+SENSOR_INPUT_OOR_HIGH 
+0x7FFC 
+SENSOR_BAD_VALUE (other reasons) 
+0x7F00 – 0x7FFB 
+ 
+5.1.3 
+CAN IDS 
+(a) CAN-IDs shall use J1939 format (29-bit identifiers), using “Proprietary B” PGNs, 
+except the Application Command Message, which uses the “Proprietary A” PGN. 
+(b) Priority of CAN messages shall be 6 (that is, 0b110). 
+(c) The reserved and data page bits for CAN messages defined in this specification shall 
+be 0. 
+(d) The BMU’s pre-selected source address, which is represented by ‘xx’ in the message 
+definition section in this document, shall have a factory default value of 0x03. 
+(e) The Application’s pre-selected source address, which is represented by ‘yy’ in the 
+message definition section of this document, shall have a factory default value of 
+0x20. 
+(f) All CAN messages in this specification transmitted by the BMU and Application shall 
+use 8 data bytes (i.e. data length code = 8), even if some bytes do not carry 
+meaningful data.  
+\n===== PAGE 15 =====\n 
+15 
+nano power a. s., Tiskařská 599/12, 108 00 Praha 10 – Malešice, 
+IČO: 01719041, DIČ: CZ01719041 
+ 
+5.2 
+CAN MESSAGE SUMMARY 
+The following is a summary of the messages.  The number of messages (###) and bus 
+utilizations assume a configuration of 420 cell-groups, 168 battery temperatures, and a CAN 
+bus baud rate of 125 kbps.  It also assumes the cell-group voltage, battery temperature, and 
+cell-balance messages are being transmitted. 
+ 
+ 
+CAN-ID 
+ 
+ 
+Interval 
+Rate 
+ 
+Source 
+Min 
+Max 
+Message 
+### 
+(sec) 
+(msg/s) 
+Bus % 
+BMU 
+0x18FF00xx 
+ 
+SOC message 
+1 
+0.1 
+10 
+1.0% 
+BMU 
+0x18FF01xx 
+ 
+Pack voltage & current 
+1 
+0.1 
+10 
+1.0% 
+BMU 
+0x18FF02xx 
+ 
+Vmin / Vmax 
+1 
+0.1 
+10 
+1.0% 
+BMU 
+0x18FF03xx 
+ 
+Tmin / Tmax 
+1 
+1 
+1 
+0.1% 
+BMU 
+0x18FF04xx 
+ 
+Fault Message 
+1 
+0.2 
+5 
+0.5% 
+BMU 
+0x18FF05xx 
+ 
+BMU Configuration 
+1 
+5 
+0.2 
+0.0% 
+BMU 
+0x18FF06xx 
+ 
+Amp-Hours 
+1 
+10 
+0.1 
+0.0% 
+BMU 
+0x18FF07xx 
+ 
+Operating Limits 
+1 
+1 
+1 
+0.1% 
+BMU 
+0x18FF10xx 
+0x18FF78xx 
+Cell voltages* 
+105 
+50msec 
+40 
+2.0% 
+BMU 
+0x18FF90xx 
+0x18FFB9xx 
+Cell Temperatures* 
+42 
+50msec 
+20 
+1.0% 
+BMU 
+0x18FFD0xx 
+0x18FFD5xx 
+Cell Balance* 
+7 
+50msec 
+20 
+0.1% 
+ACU 
+0x18EFxxyy 
+ 
+ACU Command 
+1 
+0.1 
+10 
+1.0% 
+Total Bus Utilization 
+7.80% 
+*Always transmit enabled in BMU configuration or request to transmit is on set in the 
+Application Command Message. 
+\n===== PAGE 16 =====\n 
+16 
+nano power a. s., Tiskařská 599/12, 108 00 Praha 10 – Malešice, 
+IČO: 01719041, DIČ: CZ01719041 
+ 
+5.2.1 
+0X18FF00XX – SOC MESSAGE 
+The BMU transmits the calculated SOC, current limits, present operational state and fault 
+accommodation levels and transmits them over CAN. 
+ 
+CAN-ID 
+Data 0 
+Data 1 
+Data 2 
+Data 3 
+Data 4 
+Data 5 
+Data 6 
+Data 7 
+0x18FF00xx 
+SOC 
+Charge Current 
+Limit 
+Discharge Current 
+Limit 
+State & 
+Fault 
+Accom 
+0x00 
+0x00 
+ 
+(a) SOC – defined as the pack state of charge. See section 5.1 for range and resolution. 
+(b) Charge Current Limit – defined as the maximum charge current which is permitted in 
+the current operating conditions.  See section 5.1 for range and resolution. 
+(c) Discharge Current Limit – defined as the maximum discharge current which is 
+permitted in the current operating conditions.  See section 5.1 for range and 
+resolution. 
+(d) BMU Operating State, Bits 0-4 – shall be the ID of the BMU operating state, as 
+defined in Section 3.3. 
+(e) DTC Accommodation Level, Bits 5-7 – shall be the worst-cast DTC accommodation 
+level among all active DTCs.  DTC accommodation levels are defined in Section 3.2. 
+(f) Transmit period:  100 milliseconds 
+\n===== PAGE 17 =====\n 
+17 
+nano power a. s., Tiskařská 599/12, 108 00 Praha 10 – Malešice, 
+IČO: 01719041, DIČ: CZ01719041 
+ 
+5.2.2 
+0X18FF01XX – PACK VOLTAGE AND CURRENT MESSAGE 
+The BMU transmits the Unswitched and Switched Pack Voltage, and Pack Current and 
+transmits them over CAN. In addition, the BMU transmits the currently commanded contact 
+command received and the current contactor status. 
+ 
+CAN-ID 
+Data 0 
+Data 1 
+Data 2 
+Data 3 
+Data 4 
+Data 5 
+Data 6 
+Data 7 
+0x18FF01xx 
+Unswitched Pack 
+Voltage 
+Pack Current 
+Switched Pack 
+Voltage 
+Contactor 
+Command 
+Contactor 
+Status 
+ 
+(a) Unswitched Pack Voltage – defined as the voltage of the battery on the battery side of 
+the contactor.  See section 5.1 for range and resolution. 
+(b) Pack Current – defined as the measured current.  See section 5.1 for range and 
+resolution.  
+• 
+Negative pack current means battery is discharging; positive current means 
+battery is charging. 
+(c) Switched Pack Voltage – defined as the voltage of the battery (i.e. the load voltage).  
+See section 5.1 for range and resolution. 
+(d) Contactor Command Bitmap, Bits 0-4 – contains a bit for each contactor being 
+controlled by the BMU. A value of 0 = OPEN and a value of 1 = CLOSED. 
+• 
+Contactor Command Bit Map, bit 0 = “Main Positive Contactor Command”.  
+• 
+Contactor Command Bit Map, bit 1 = “Main Negative Contactor Command”. 
+• 
+Contactor Command Bit Map, bit 2 = “Pre-charge Contactor Command”. 
+• 
+Contactor Command Bit Map, bit 3 = “Mid-Pack Contactor Command”. 
+• 
+Contactor Command Bit Map, bit 4 = “Aux Output Command”. 
+• 
+Contactor Command Bit Map, bits 5-7 are reserved for future use. 
+(e) Contactor Status Bitmap, Bits 0-5 – contains a bit for each output being monitored by 
+the BMU. A value of 0 = OPEN (output voltage is floating) and a value of 1 = CLOSED 
+(output voltage pulled low). 
+• 
+Contactor Status Bit Map, bit 0 = “Main Positive Contactor Status”. 
+• 
+Contactor Status Bit Map, bit 1 = “Main Negative Contactor Status”. 
+• 
+Contactor Status Bit Map, bit 2 = “Pre-charge Contactor Status”. 
+• 
+Contactor Status Bit Map, bit 3 = “Mid-Pack Contactor Status”. 
+• 
+Contactor Status Bit Map, bit 4 = “Aux Input Pin Status”.  This is the status of 
+the Aux Input Pin if used, or 0 if Aux Input Pin is not used. 
+• 
+Contactor Status Bit Map, bit 5 = “Aux Output Pin Status”.  This is the status 
+of the Aux Output Pin if used, or 0 if the Aux Output Pin is not used. 
+• 
+Contactor Status Bit Map, bits 6-7 are reserved for future use and shall be set 
+to 0. 
+• 
+If a contactor is un-instrumented and therefore unable to report status, its 
+status bit shall be set to 0. 
+(f) Transmit period:  100 milliseconds 
+ 
+\n===== PAGE 18 =====\n 
+18 
+nano power a. s., Tiskařská 599/12, 108 00 Praha 10 – Malešice, 
+IČO: 01719041, DIČ: CZ01719041 
+ 
+5.2.3 
+0X18FF02XX – VMIN / VMAX MESSAGE 
+The BMU transmits the Minimum and Maximum Cell Voltages and respective cell ID. 
+ 
+CAN-ID 
+Data 0 
+Data 1 
+Data 2 
+Data 3 
+Data 4 
+Data 5 
+Data 6 
+Data 7 
+0x18FF02xx 
+Vmin 
+Vmax 
+Vmin-ID 
+Vmax-ID 
+ 
+(a) Vmin – defined as the minimum of the cell voltages.  See section 5.1 for range and 
+resolution. 
+(b) Vmax – defined as the maximum of the cell voltages.  See section 5.1 for range and 
+resolution. 
+(c) Vmin ID – defined as the ID of the cell-group whose voltage is smallest, MSB first. 
+(d) Vmax ID – defined as the ID of the cell-group whose voltage is largest, MSB first. 
+(e) If a cell voltage is out of range or its LMU is not reporting, its value will not be included 
+in the calculation of minimum and maximum.  A DTC flag will be set for any events 
+where a measurement has been omitted from this message because it is out of range 
+or LMU not reporting. 
+(f) Transmit Period: 100 milliseconds. 
+ 
+5.2.4 
+0X18FF03XX – TMIN / TMAX MESSAGE 
+The BMU transmits the Average Temperature, Minimum and Maximum Temperature and 
+respective temperature ID. 
+ 
+CAN-ID 
+Data 0 
+Data 1 
+Data 2 
+Data 3 
+Data 4 
+Data 5 
+Data 6 
+Data 7 
+0x18FF03xx 
+Tmin 
+Tmax 
+Taverage 
+TminID 
+TmaxID 
+ 
+(a) Tmin – defined as the minimum of the measured battery temperatures. See section 
+5.1 for range and resolution. 
+(b) Tmax – defined as the maximum of the measured battery temperatures. See section 
+5.1 for range and resolution. 
+(c) Taverage – defined as the average of the measured battery temperatures. See 
+section 5.1 for range and resolution. 
+(d) Tmin ID – defined as the ID of the temperature measurement which is smallest. 
+(e) Tmax ID – defined as the ID of the temperature measurement which is largest. 
+(f) If a temperature is reported out of range or LMU not reporting, its value will not be 
+included in the calculation of minimum, maximum, and average.  A DTC flag will be 
+set for any events where a measurement has been omitted from this message 
+because it is out of range or LMU not reporting. 
+(g) Transmit period:  1 second 
+\n===== PAGE 19 =====\n 
+19 
+nano power a. s., Tiskařská 599/12, 108 00 Praha 10 – Malešice, 
+IČO: 01719041, DIČ: CZ01719041 
+ 
+5.2.5 
+0X18FF04XX – DTC MESSAGE 
+The BMU transmits the first 8 highest accommodation level DTC codes. 
+ 
+CAN-ID 
+Data 0 
+Data 1 
+Data 2 
+Data 3 
+Data 4 
+Data 5 
+Data 6 
+Data 7 
+0x18FF04xx 
+Active 
+Fault #1 
+Active 
+Fault #2 
+Active 
+Fault #3 
+Active 
+Fault #4 
+Active 
+Fault #5 
+Active 
+Fault #6 
+Active 
+Fault #7 
+Active 
+Fault #8 
+ 
+(a) Active Fault #1 through Active Fault #8 are DTCs (i.e. codes) of active diagnostics.  
+The list of active DTCs shall be listed from highest (#1) to lowest (#8) DTC 
+accommodation level, then by numerical order of the DTC code. 
+• 
+If there are more than 8 active DTCs, only the first 8 active DTCs are 
+represented. 
+• 
+If there are less than 8 active DTCs, the message shall a 0. 
+(NOTE: ‘0’ is not a valid DTC code.) 
+• 
+The current Accommodation Level is reported in the SOC Message, section 
+5.2.1. 
+(b) Transmit period:  200 msec, or upon change. 
+ 
+5.2.6 
+0X18FF05XX – BMU CONFIGURATION MESSAGE 
+The BMU transmits the software version and configuration information. 
+ 
+CAN-ID 
+Data 0 
+Data 1 
+Data 2 
+Data 3 
+Data 4 
+Data 5 
+Data 6 
+Data 7 
+0x18FF05xx 
+Interface
+-Version 
+App ID 
+Build-
+Cfg-ID 
+ECU-DB-ID 
+# of Cell Groups 
+# of 
+Temps 
+ 
+(a) Interface Version – the version of the interface being used. 
+(b) App ID, Build-Cfg-ID, and ECU-Db-ID – are software & calibration version numbers 
+used internally by Altairnano to track firmware configurations. 
+(c) # of Cell Groups – the number of cell voltages configured in the BMU. 
+(d) # of Temperatures – the number of temperatures configured in the BMU. 
+(e) Transmit period:  5 seconds. 
+ 
+\n===== PAGE 20 =====\n 
+20 
+nano power a. s., Tiskařská 599/12, 108 00 Praha 10 – Malešice, 
+IČO: 01719041, DIČ: CZ01719041 
+ 
+5.2.7 
+0X18FF06XX – AMP-HOUR MESSAGE 
+The BMU transmits the Charge and Discharge Amp-Hours. 
+ 
+CAN-ID 
+Data 0 
+Data 1 
+Data 2 
+Data 3 
+Data 4 
+Data 5 
+Data 6 
+Data 7 
+0x18FF06xx 
+Amp-Hours Charging 
+Amp-Hours Discharging 
+ 
+(a) Amp-Hours Charging – the Amp Hours Charging (resolution 1.0 Ah), MSB first byte 
+order.  
+(b) Amp-Hours Discharging – the Amp Hours Discharging (resolution 1.0 Ah), MSB first 
+byte order.  
+(c) Transmit period:  10 seconds. 
+ 
+5.2.8 
+0X18FF07XX – BMU CONFIGURATION OPERATING LIMITS MESSAGE 
+The BMU transmits the Pack Voltage Minimum, Pack Voltage Maximum, Cell Voltage 
+Minimum, and Cell Voltage Maximum. 
+ 
+CAN-ID 
+Data 0 
+Data 1 
+Data 2 
+Data 3 
+Data 4 
+Data 5 
+Data 6 
+Data 7 
+0x18FF07xx 
+Pack Voltage Min 
+Pack Voltage Max 
+Cell Voltage Min 
+Cell Voltage Max 
+ 
+(a) Pack Voltage Min – the minimum allowable pack voltage (Discharge Stop) whereby 
+discharging of the system is permitted. See section 5.1 for range and resolution. 
+(b) Pack Voltage Max – the maximum allowable pack voltage (Charge Stop) whereby 
+charging of the system is permitted. See section 5.1 for range and resolution. 
+(c) Cell Voltage Min – the minimum allowable cell-voltage (Discharge Stop) whereby 
+discharging of the system is permitted. See section 5.1 for range and resolution. 
+(d) Cell Voltage Max – the maximum allowable cell-voltage (Charge Stop) whereby 
+charging of the system is permitted. See section 5.1 for range and resolution. 
+ 
+\n===== PAGE 21 =====\n 
+21 
+nano power a. s., Tiskařská 599/12, 108 00 Praha 10 – Malešice, 
+IČO: 01719041, DIČ: CZ01719041 
+ 
+5.2.9 
+0X18FF10XX+ – CELL VOLTAGE MESSAGE 
+The BMU transmits each of the cell voltages when requested by the ACU Command or 
+continuously, if configured in the BMS Configuration. 
+ 
+CAN-ID 
+Data 0 
+Data 1 
+Data 2 
+Data 3 
+Data 4 
+Data 5 
+Data 6 
+Data 7 
+0x18FF10xx 
+V0 
+V1 
+V2 
+V3 
+0x18FF11xx 
+V4 
+V5 
+V6 
+V7 
+… 
+… 
+… 
+… 
+… 
+0x18FF78xx 
+V416 
+V417 
+V418 
+V419 
+ 
+(a) V0 – V419 – defined as the voltage of the respective cell. 
+• 
+Only configured cell groups will be transmitted. The BMU will transmit two 
+rows per Time Period. See section 5.1 for range and resolution. 
+For example, if the configuration has only 16 cells configured, the BMU will 
+transmit the first row (0x18FF10xx, 0x18FF11xx) then XX msec later it will 
+transmit the next row (0x18FF12xx, 0x18ff13xx). 
+(b) Transmit period:   
+• 
+ACU Application Command – when requested by the ACU the Cell Voltages 
+will be transmitted. 
+• 
+Always Transmit Configuration – is configurable in the BMS file and 
+determines if the Cell Voltages will be continuously transmitted at the 
+configured rate. 
+• 
+Configurable rates are 10 msec, 20 msec, and 50 msec. 
+ 
+\n===== PAGE 22 =====\n 
+22 
+nano power a. s., Tiskařská 599/12, 108 00 Praha 10 – Malešice, 
+IČO: 01719041, DIČ: CZ01719041 
+ 
+5.2.10 0X18FF90XX+ – BATTERY TEMPERATURE MESSAGE 
+The BMU transmits each of the Battery Temperatures when requested by the ACU Command 
+or continuously, if configured in the BMS Configuration. 
+ 
+CAN-ID 
+Data 0 
+Data 1 
+Data 2 
+Data 3 
+Data 4 
+Data 5 
+Data 6 
+Data 7 
+0x18FF90xx 
+T0 
+T1 
+T2 
+T3 
+0x18FF91xx 
+T4 
+T5 
+T6 
+T7 
+… 
+… 
+… 
+… 
+… 
+0x18FFB9xx 
+T164 
+T165 
+T166 
+T167 
+ 
+(a) T0 – T167 – defined as the temperature of a configured sensor. 
+• 
+Only configured temperatures will be transmitted. The BMU will transmit one 
+row per Time Period. See section 5.1 for range and resolution. 
+For example, if the configuration has only 8 temperatures configured, the 
+BMU will transmit the first row (0x18FF90xx) then XX msec later it will 
+transmit the next row (0x18FF91xx). 
+(b) Transmit period: 
+• 
+ACU Application Command – when requested by the ACU the Temperature 
+message will be transmitted every 200 msec. 
+• 
+Always Transmit Configuration – is configurable in the BMS file and 
+determines if the Temperatures would be continuously transmitted at the 
+configured rate. 
+- Configurable rates are 10 msec, 20 msec, and 50 msec. 
+\n===== PAGE 23 =====\n 
+23 
+nano power a. s., Tiskařská 599/12, 108 00 Praha 10 – Malešice, 
+IČO: 01719041, DIČ: CZ01719041 
+ 
+5.2.11 0X18FFD0XX+ – CELL-BALANCE MESSAGE 
+The BMU shall have the ability to transmit the state of the cell-balancing circuits on CAN. 
+ 
+CAN-ID 
+Data 0 
+Data 1 
+Data 2 
+Data 3 
+Data 4 
+Data 5 
+Data 6 
+Data 7 
+0x18FFD0xx 
+CB0 
+CB1 
+CB2 
+CB3 
+CB4 
+CB5 
+CB6 
+CB7 
+0x18FFD1xx 
+CB8 
+CB9 
+CB10 
+CB11 
+CB12 
+CB13 
+CB14 
+CB15 
+… 
+… 
+… 
+… 
+… 
+… 
+… 
+… 
+… 
+0x18FFD6xx 
+CB442 
+CB442 
+CB443 
+CB444 
+CB445 
+CB446 
+CB447 
+CB448 
+ 
+(a) CB0-CB448 – each CB byte is a bit map of cell-balance states.  Bit 0 of CB0 is the 
+cell-balance state of cell 0; Bit 7 of CB0 is the cell-balance state of cell 7, etc. 
+• 
+A ‘1’ indicates that the LMU is balancing the cell. A ‘0’ indicates that the LMU 
+is not balancing the cell. 
+• 
+Only configured cells balancing state will be transmitted. The BMU will 
+transmit one row per Time Period. 
+For example, if the configuration has only 300 cells configured, the BMU will 
+transmit the first row (0x18FFD0xx) then XX msec later it will transmit the next 
+row (0x18FFD1xx). 
+(b) Transmit period: 
+• 
+ACU Application Command – when requested by the ACU the Cell Balance 
+message will be transmitted every 2.0 seconds. 
+• 
+Always Transmit Configuration – is configurable in the BMS file and 
+determines if the Cell Balance would be continuously transmitted at the 
+configured rate. 
+- Configurable rates are 10 msec, 20 msec, and 50 msec. 
+\n===== PAGE 24 =====\n 
+24 
+nano power a. s., Tiskařská 599/12, 108 00 Praha 10 – Malešice, 
+IČO: 01719041, DIČ: CZ01719041 
+ 
+5.2.12 0X18EFXXYY – APPLICATION COMMAND MESSAGE 
+The Application Control Unit sends the message to the BMU to control interactions. 
+CAN-ID 
+Data 0 
+Data 1 
+Data 2 
+Data 3 
+Data 4 
+Data 5 
+Data 6 
+Data 7 
+0x18EFxxyy 
+Desired 
+BMS 
+State 
+External 
+Contactor 
+State 
+Command 
+Bit Map 
+App 
+Heartbeat 
+0x00 
+0x00 
+0x00 
+0x00 
+ 
+(a) Desired BMS State 
+• 
+Desired BMU State, Bits 0-3 – {IDLE, READY, or POWER-DOWN READY} 
+See Section 3.3 
+• 
+Command Type, Bits 4-7 – represents the “Command Type”, and shall be set 
+to ‘0000’ binary, indicating “Application Command Message”. 
+(b) Extern Contactor State – used when Contactor Control is configured as External. 
+When configured the ACU must report the contactor status for proper system 
+operation. 
+• 
+Bit 0 – ‘0’ indicates contactor is Open. ‘1’ indicates contactor is Closed. 
+NOTE: This must be set to 1 anytime current can flow. 
+• 
+Bit 1-7 – Reserved for future use, always set to ‘0’. 
+(c) Command Bit Map 
+• 
+Bit 0 “External E-Stop” – Set to ‘1’, the BMU performs an emergency stop 
+procedure. 
+• 
+Bit 1 “Transmit Cell Voltage Messages” – Set to ‘1’, the BMU will transmit the 
+cell Voltage Messages defined in Section 5.2.7. 
+• 
+Bit 2 “Transmit Temperature Messages” – Set to ‘1’, the BMU will transmit the 
+Temperature Messages defined in Section 5.2.10. 
+• 
+Bit 3 “Transmit Cell-Balance Messages” – Set to ‘1’, the BMU will transmit the 
+Cell-Balance Messages defined in Section 5.2.11. 
+• 
+Bit 4 “Reset Latched DTCs” – Transition from ‘0’ to ‘1’, the BMU shall reset 
+the state of any active DTCs that are latched (i.e. not auto-cleared). 
+NOTE: This shall NOT erase any history related to DTC occurrences. 
+• 
+Bit 5 “BMU Aux Output Command” – When enabled through the BMS 
+Configuration, sets the state of the Aux Output pin. 
+• 
+Bit 6-7 – Reserved for future use. 
+(d) Application Heartbeat – The value must be different than the previous ACU command. 
+Simplest approach is to increment a counter 0, 1, 2, 3, … 
+(e) Transmit period – Transmit rate depends on the BMS Configuration settings. The 
+ACU must meet the following timing requirements to prevent FC103 Lost 
+Communication DTC.  
+Option 
+Nominal transmit 
+period 
+Time to set “comms lost” 
+DTC if app cmd msg stops 
+Transmit rate required to 
+clear the “comms lost” DTC 
+#1 
+100 msec 
+1.0 sec 
+< 250 msec consistently 
+#2 
+200 msec 
+2.0 sec 
+< 500 msec consistently 
+#3 
+400 msec 
+4.0 sec 
+< 1.0 sec consistently 
+\n===== PAGE 25 =====\n 
+25 
+nano power a. s., Tiskařská 599/12, 108 00 Praha 10 – Malešice, 
+IČO: 01719041, DIČ: CZ01719041 
+ 
+6.0 MULTI-STRING COORDINATION 
+The BMS supports coordination of multiple battery strings connected in parallel.  When 
+operated this way, each string has its own BMU and set of LMUs; one of the strings BMU acts 
+as a “Multi-String Coordinator”.  The “Multi-String Coordinator” sends commands to the BMU 
+of all other strings and receives information from them. 
+The Application Control Unit (ACU) communicates with the Multi-String Coordinator using 
+CAN messages defined in this section. 
+Any of the string BMUs can act as the coordinator; all are configured identically, except for 
+CAN addresses.  Only one can be coordinator at a time, however.  Whichever BMU receives 
+the Multi-String Application Command Message from the Application Control Unit will act as 
+the coordinator. 
+The following illustrates the operation of such a system. 
+BMS
+String #1
+BMS Coordinator
+…
+Application
+Control Unit
+Multi-string CAN messages
+Battery String #1
+BMS
+String #2
+Battery String #2
+…
+BMS
+String #N
+Battery String #N
++
+-
+ 
+6.1 
+SWITCHOVER IN CASE OF MULTI-STRING COORDINATOR FAILURE 
+Several additional requirements enable the Application Control Unit to dynamically change 
+which of the BMUs is acting as “Multi-String Coordinator”.  The requirements are as follows: 
+(a) If the BMU acting as “Multi-String Coordinator” fails, the Application Control Unit can 
+switch the destination address of its “Multi-string Application Command” messages to 
+one of the other strings BMU. 
+(b) A string’s BMU shall accept “Application Command Messages” from either the pre-
+specified Application Control Unit’s address, or from the address of any of the other 
+BMUs (which would send the message only when acting as “Multi-String 
+Coordinator”). 
+(c) If a string’s BMU is receiving “Application Command Messages” from a given 
+“application address”, it shall ignore “Application Command Messages” from all other 
+addresses until the message from the current “application address” times out.  After 
+that, the string’s BMU can receive “Application Command Message” from any of the 
+allowed addresses. 
+\n===== PAGE 26 =====\n 
+26 
+nano power a. s., Tiskařská 599/12, 108 00 Praha 10 – Malešice, 
+IČO: 01719041, DIČ: CZ01719041 
+ 
+6.2 
+0X18FFE0XX – MULTI-STRING SOC MESSAGE 
+The BMU transmits the Multi-string SOC, Multi-string Charge Current Limit, Multi-string 
+Discharge Current Limit, State & Fault Accommodation, and Connect Voltage Flags. 
+ 
+CAN-ID 
+Data 0 
+Data 1 
+Data 2 
+Data 3 
+Data 4 
+Data 5 
+Data 6 
+Data 7 
+0x18FFE0xx 
+Multi-
+string 
+SOC 
+Multi-string 
+Charge Current 
+Limit 
+Multi-string 
+Discharge Current 
+Limit 
+State & 
+Fault 
+Accom 
+Connect 
+Voltage 
+Flags 
+0x00 
+ 
+(a) Multi-string SOC – is the state of charge of the combination of strings.   See section 
+5.1 for range and resolution.   If SOC cannot be calculated (e.g. because of an error 
+condition), the reported value shall be 0xFF. 
+(b) Multi-string Charge Current Limit – is the maximum charge current which is permitted 
+in the current operating conditions.  See section 5.1 for range and resolution. 
+(c) Multi-string Discharge Current Limit –is the maximum discharge current which is 
+permitted in the current operating conditions.  See section 5.1 for range and 
+resolution. 
+(d) State & Fault Accommodation 
+• 
+Multi-string Operating State, Bits 0-4 – (i.e. 5 least significant bits) is the ID of 
+the Multi-String Coordinator’s operating state, as defined in Section 3.3. 
+• 
+Multi-string DTC Accommodation Level, Bits 5-7 – (i.e. 3 most significant bits) 
+is the DTC accommodation level representing multi-string capability.  DTC 
+accommodation levels are defined in Section 3.2. 
+NOTE:  The multi-string accommodation is not simply the worst-case 
+accommodations from the individual string BMUs.  For example, if one string has 
+a Disconnect DTC but the others are operating normally, this would be 
+represented as a Derate DTC at the multi-string level. 
+(e) Connect Voltage Flags, Bit 0 = String 1, Bit 1 = String 2, etc… Unused bits are set to 
+‘0’. 
+• 
+The “Connect Voltage Flag” for a string is defined as ‘1’ if the load voltage and 
+unswitched pack voltage for that string are sufficiently close that the string’s 
+main contactors could be closed without waiting for pre-charge.  The flag is 
+defined as ‘0’ if the voltages are sufficiently different that a pre-charge delay 
+would be required to close the string’s main contactors. 
+(f) The BMU shall transmit the Multi-string SOC message only while acting as Multi-
+String Coordinator. 
+(g) Transmit period:  100 milliseconds 
+\n===== PAGE 27 =====\n 
+27 
+nano power a. s., Tiskařská 599/12, 108 00 Praha 10 – Malešice, 
+IČO: 01719041, DIČ: CZ01719041 
+ 
+6.3 
+0X18FFE1XX – MULTI-STRING VOLTAGE AND CURRENT MESSAGE 
+The BMU transmits the Multi-string Pack Voltage and Multi-string Pack current. 
+ 
+CAN-ID 
+Data 0 
+Data 1 
+Data 2 
+Data 3 
+Data 4 
+Data 5 
+Data 6 
+Data 7 
+0x18FFE1xx 
+Multi-string Pack 
+Voltage 
+Multi-string Pack 
+Current 
+0x00 
+0x00 
+0x00 
+0x00 
+ 
+(a) Multi-string Pack Voltage – is the voltage across the load (which is battery voltage 
+when the contactor is closed). See section 5.1 for range and resolution. 
+(b) Multi-string Pack Current – is the sum of the pack currents of individual strings.  See 
+section 5.1 for range and resolution.  
+• 
+Negative pack current means battery is discharging; positive current means 
+battery is charging. 
+(c) The BMU shall transmit the Multi-string Voltage and Current Message only while 
+acting as Multi-String Coordinator.  
+(d) Transmit period:  100 milliseconds 
+ 
+6.4 
+0X18FFE2XX – MULTI-STRING VMIN/VMAX MESSAGE 
+The BMU transmits the Vmin_Connected, Vmax_Connected, Vmin_Global, and Vmax_global 
+data. 
+ 
+CAN-ID 
+Data 0 
+Data 1 
+Data 2 
+Data 3 
+Data 4 
+Data 5 
+Data 6 
+Data 7 
+0x18FFE2xx 
+Vmin_Connected 
+Vmax_Connected 
+Vmin_Global 
+Vmax_Global 
+ 
+(a) Vmin_Connected – is the minimum of the cell-voltages across all strings which are 
+currently connected. 
+(b) Vmax_Connected – is the maximum of the cell-voltages across all strings which are 
+currently connected. 
+(c) Vmin_Global – is the minimum of the cell-voltages across all strings. 
+(d) Vmax_Global – is the maximum of the cell-voltages across all strings. 
+(e) See section 5.1 for range and resolution of cell-group voltages. 
+(f) Transmit Period: 100 milliseconds. 
+\n===== PAGE 28 =====\n 
+28 
+nano power a. s., Tiskařská 599/12, 108 00 Praha 10 – Malešice, 
+IČO: 01719041, DIČ: CZ01719041 
+ 
+6.5 
+0X18FFE3XX – MULTI-STRING TMIN/TMAX MESSAGE 
+The BMU transmits the Tmin_Connected, Tmax_Connected, Tmin_Global, and Tmax_global 
+data. 
+ 
+CAN-ID 
+Data 0 
+Data 1 
+Data 2 
+Data 3 
+Data 4 
+Data 5 
+Data 6 
+Data 7 
+0x18FFE3xx 
+Tmin_Connected 
+Tmax_Connected 
+Tmin_Global 
+Tmax_Global 
+ 
+(a) Tmin_Connected – is the minimum of the temperature measurements across all 
+strings which are currently connected. 
+(b) Tmax_Connected – is the maximum of the temperature measurements across all 
+strings which are currently connected. 
+(c) Tmin_Global – is the minimum of the temperature measurements across all strings. 
+(d) Tmax_Global – is the maximum of the temperature measurements across all strings. 
+(e) See section 5.1 for range and resolution of temperatures. 
+(f) Transmit Period: 100 milliseconds. 
+ 
+\n===== PAGE 29 =====\n 
+29 
+nano power a. s., Tiskařská 599/12, 108 00 Praha 10 – Malešice, 
+IČO: 01719041, DIČ: CZ01719041 
+ 
+6.6 
+0X18EFXXYY – MULTI-STRING APPLICATION COMMAND MESSAGE 
+The Application control unit sends the Multi-string Application Command Message to the Multi-
+String Coordinator as part of the hand-shaking interaction. 
+ 
+CAN-ID 
+Data 0 
+Data 1 
+Data 2 
+Data 3 
+Data 4 
+Data 5 
+Data 6 
+Data 7 
+0x18EFxxyy 
+Desired 
+BMS 
+Coordinator 
+State 
+Command 
+Bit Map 
+String Bit Map 
+Aux 
+Command 
+Bit Map 
+0x00 
+0x00 
+0x00 
+ 
+(a) CAN-ID – is the address of the ACU and the BMU that will be the coordinator. 
+• 
+If a different BMU is to be selected as Coordinator the new BMU will not 
+accept becoming Coordinator unless FC103 is currently active (previous 
+Coordinator is not communicating). 
+NOTE: This occurs when the current Coordinator has went offline allowing 
+other BMUs to take over the role. 
+(b) Desired BMS Coordinator State 
+• 
+Bits 0-3 – is the “Desired Multi-string BMS State”, and shall be one of the 
+following BMU operating states, as defined in Section 3.3:   { IDLE, READY, 
+or POWER-DOWN READY } 
+• 
+Bits 4-7 of Data1 represents the “Command Type”, and shall be set to ‘0001’ 
+binary, indicating “Multi-string Application Command Message”. 
+(c) Command Bit Map 
+• 
+Bit 0 = “External E-Stop” – If set to ‘1’, the Multi-String Coordinator shall 
+perform the emergency stop procedure, including setting the “External E-
+Stop” bit in the DTC message, the same as if a Level 4 DTC was detected. 
+• 
+Bit 1 = “Reset Latched DTCs” – If set to ‘1’, the Multi-String Coordinator shall 
+relay the DTC reset command to all the string’s BMUs via the Application 
+Command Message. 
+• 
+Bits 2-7 – Reserved for future use, always set to ‘0’. 
+(d) String Bit Map – indicates which of the strings are to be operated, where a bit of ‘1’ 
+means the string should be operated, and a bit of ‘0’ means the string should be 
+disconnected from the common voltage bus.  Bit 0 (LSB) is string #1, bit 1 is string #2, 
+etc., bit 15 is string #16. (NOTE: the 16-bit value is MSB first, so bit 15 is the MSB of 
+Data3.) 
+The String Bit Map enables the Application Control Unit to take one or more strings 
+offline if required.  For example, if a string has a failure that causes it to go offline, it 
+may be necessary to rebalance the strings after the DTC condition is eliminated.  In 
+that case, the Application Control Unit could operate the pack with a ‘0’ for the 
+previously failed string until the point where connecting the string is appropriate, as by 
+the Section 6.2, Connect Voltage Flags. 
+(e) Aux Command Bit Map – is the Aux IO Output Control 
+• 
+Bit 0 = String 1, Bit 1 = String 2, etc… If set to ‘1’, the Aux Output is active. 
+(f) Transmit Period: See Application Command Message in Section 5.2.12 
+• 
+If a BMU does not receive the Multi-string Application Command Message for 
+the defined period, then the BMU will stop executing as “Multi-string 
+Coordinator”. 
+\n===== PAGE 30 =====\n 
+30 
+nano power a. s., Tiskařská 599/12, 108 00 Praha 10 – Malešice, 
+IČO: 01719041, DIČ: CZ01719041 
+ 
+7.0 REVISION HISTORY 
+Version 
+Author 
+Date 
+Comment 
+00 
+Keith Musser 
+6/18/2009 
+Initial draft. 
+01 
+Keith Musser 
+6/29/2009 
+Added multi-string coordination. 
+02 
+Keith Musser 
+6/30/2009 
+• Refined multi-string coordination messages. 
+• Changed variable resolution to always be a power 
+of 2, and to be uniform throughout the document. 
+03 
+Keith Musser 
+9/16/2009 
+• Added logic to power down if there is impending 
+damage to electronics hardware. 
+04 
+Keith Musser 
+10/17/2009 
+• Renamed “BMS Coordinator” to “Multi-String 
+Coordinator”. 
+• Added the ability for the ACU to reset BMS faults. 
+• Added the Amp-Hour message. 
+05 
+Keith Musser 
+12/12/2009 
+• Added additional error indicators to voltages and 
+temperatures that are not normal. (See Section 
+5.1) 
+06 
+Keith Musser 
+1/25/2010 
+• Created separate “global” and “connected” 
+definitions of VMin / VMax and TMin / TMax. 
+07 
+Keith Musser 
+3/12/2010 
+• Functional change - Changed “reset faults” to 
+“reset latched faults”. 
+• Functional change - Changed “reset faults” to 
+occur on low-to-high transition rather than on bit 
+value = ‘1’. 
+• Functional change – Changed default ACU CAN 
+address to 0x20. 
+• Functional change – Added “connect voltage flags” 
+to the multi-string SOC messages. 
+• Functional change – Made sleep on “BMU Off” a 
+configuration option. 
+• Clarification - Changed the term “fault” to “DTC”. 
+• Clarification - Changed the term “MCU” to “BMU”. 
+• Clarification - Corrected use of “BMS” to refer to 
+complete system, and “BMU” to refer to only the 
+master control unit. 
+08 
+Keith Musser 
+11/18/2010 
+• Functional change – Added minimum delays for 
+IDLE and PRECHARGE state. 
+• Allow App Command to abort PRE-CHARGE. 
+09 
+Jeff Coon 
+1/31/2013 
+• Functional change – Added “Operating Limits” 
+message 
+10 
+Keith Musser 
+3/08/2013 
+• Added contactor status to the Pack Voltage and 
+Current Message 
+11 
+Keith Musser 
+5/30/2013 
+• Clarified the upper nibble of byte Data1 in the 
+Application Command Message. 
+12 
+Keith Musser 
+10/18/2013 
+• Updated to new Altairnano logo. 
+13 
+Keith Musser 
+5/10/2014 
+• Made timeout for Application Command Message 
+configurable 
+14 
+Keith Musser 
+8/22/2014 
+• Clarified timeout for Multi-String Application 
+Command Message. 
+15 
+Keith Musser 
+4/29/2019 
+• Added Aux Input Pin, Aux Output Pin, and BMU 
+Aux Output Command. 
+• Aux Command Bit Map was added to the Multi-
+String Application Command message. 
+• Configuration to always transmit cell-voltage, 
+temperature, and / or cell balance messages. 
+• Configurable transmit rate for cell-voltage 
+messages. 
+\n===== PAGE 31 =====\n 
+31 
+nano power a. s., Tiskařská 599/12, 108 00 Praha 10 – Malešice, 
+IČO: 01719041, DIČ: CZ01719041 
+ 
+Version 
+Author 
+Date 
+Comment 
+16 
+Mike Long 
+TBD 
+• No specific functional changes performed. 
+• General cleanup and clarification of protocol. 
+• Increased number of cell groups allowed. 
+• Increased number of temperatures allowed. 
+• Updated Message Summary timing. 
+ 
+ 
+ 
+ 

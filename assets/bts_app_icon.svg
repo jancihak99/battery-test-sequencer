@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Battery Test Sequencer">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0A2A38"/>
+      <stop offset="100%" stop-color="#0E4054"/>
+    </linearGradient>
+    <linearGradient id="wave" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#2EC6E8"/>
+      <stop offset="55%" stop-color="#00A3D9"/>
+      <stop offset="100%" stop-color="#E25B3A"/>
+    </linearGradient>
+  </defs>
+  <!-- App tile — industrial HMI style (EA / BioLogic / Neware) -->
+  <rect x="4" y="4" width="120" height="120" rx="26" fill="url(#tile)"/>
+  <!-- Battery body -->
+  <rect x="23" y="43" width="68" height="42" rx="8" fill="none" stroke="#F4F8FB" stroke-width="5"/>
+  <!-- Positive terminal -->
+  <rect x="93" y="55" width="9" height="18" rx="3" fill="#F4F8FB"/>
+  <!-- Charge (cyan) → discharge (coral) sequence profile — Neware-style language -->
+  <polyline
+    fill="none"
+    stroke="url(#wave)"
+    stroke-width="4.5"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    points="34,72 44,72 51,54 69,54 76,72 87,72"/>
+</svg>

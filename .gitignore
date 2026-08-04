@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+runs/*.csv
+runs/*.json
+runs/*.html
+runs/*.log
+.pytest_cache/
+.github_token
+*.token
+.DS_Store

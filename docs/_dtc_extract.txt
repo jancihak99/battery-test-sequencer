@@ -1,0 +1,1404 @@
+
+===== PAGE 1 =====
+ 
+ 
+Altairnano Business Confidential Information-Authorized Third Party Use ONLY 
+Altairnano Restricted Distribution. To be viewed by Addressee Only. 
+This information is proprietary to Altairnano. Any unauthorized reproduction, use  
+or disclosure of this material, or any part thereof, is strictly prohibited. 
+ 
+ 
+Altairnano BMS Hardware 
+BMS DTC List 
+ 
+ 
+ 
+Document Number: 3343572 (R2) 
+Release Date:  August 31, 2023 
+ 
+ 
+ 
+ 
+
+===== PAGE 2 =====
+Title: BMS DTC List 
+Document:  3343572 (R2) 
+Page 2 of 21 
+ 
+Altairnano Business Confidential Information-Authorized Third Party Use ONLY 
+Altairnano Restricted Distribution. To be viewed by Addressee Only. 
+This information is proprietary to Altairnano. Any unauthorized reproduction, use or disclosure of this material, or 
+any part thereof, is strictly prohibited. 
+Table of Contents 
+1. 
+DIAGNOSTIC TROUBLE CODES (DTC’S) USED..................................................................................................... 3 
+1.1 
+FC101_EXTERNAL_ESTOP_FAULT .................................................................................................................... 3 
+1.2 
+FC103_COMM_TIMEOUT_APP_BUS................................................................................................................... 3 
+1.3 
+FC104_LMU_NOT_REPORTING ........................................................................................................................... 3 
+1.4 
+FC105_PACK_VOLTAGE_MISMATCH ............................................................................................................... 4 
+1.5 
+FC106_CELL_TEMPERATURE_ABOVE_NORMAL_RANGE .......................................................................... 4 
+1.6 
+FC107_CELL_TEMPERATURE_BELOW_NORMAL_RANGE .......................................................................... 4 
+1.7 
+FC108_CELL_TEMPERATURE_FAR_ABOVE_NORMAL_RANGE................................................................. 5 
+1.8 
+FC109_CELL_TEMPERATURE_FAR_BELOW_NORMAL_RANGE ................................................................ 5 
+1.9 
+FC110_CELL_VOLTAGE_ABOVE_NORMAL_RANGE..................................................................................... 5 
+1.10 
+FC111_CELL_VOLTAGE_BELOW_NORMAL_RANGE .................................................................................... 5 
+1.11 
+FC112_CELL_VOLTAGE_FAR_ABOVE_NORMAL_RANGE ........................................................................... 6 
+1.12 
+FC113_CELL_VOLTAGE_FAR_BELOW_NORMAL_RANGE .......................................................................... 6 
+1.13 
+FC114_MCU_POWER_SUPPLY_FAULT ............................................................................................................. 6 
+1.14 
+FC115_CELL_VOLTAGE_SENSOR_OOR ............................................................................................................ 7 
+1.15 
+FC116_CHARGE_CURRENT_ABOVE_CMD_LIMIT ......................................................................................... 7 
+1.16 
+FC117_CHARGE_CURRENT_FAR_ABOVE_CMD_LIMIT ............................................................................... 8 
+1.17 
+FC122_DISCONNECT_TOO_SLOW ..................................................................................................................... 8 
+1.18 
+FC123_MAIN_CONTACTOR_FAULT .................................................................................................................. 9 
+1.19 
+FC128_CURRENT_SENSOR_LARGE_OFFSET................................................................................................... 9 
+1.20 
+FC130_MULTI_STRING_ADDRESS_MISMATCH ............................................................................................. 9 
+1.21 
+FC131_MULTI_STRING_COMM_TIMEOUT..................................................................................................... 10 
+1.22 
+FC133_DISCHARGE_CURRENT_ABOVE_CMD_LIMIT ................................................................................. 10 
+1.23 
+FC134_DISCHARGE_CURRENT_FAR_ABOVE_CMD_LIMIT ....................................................................... 11 
+1.24 
+FC137_MCU_TEMP_BELOW_NORMAL_RANGE ........................................................................................... 11 
+1.25 
+FC138_MCU_TEMP_FAR_BELOW_NORMAL_RANGE ................................................................................. 11 
+1.26 
+FC139_MCU_TEMP_ABOVE_NORMAL_RANGE ............................................................................................ 12 
+1.27 
+FC140_MCU_TEMP_FAR_ABOVE_NORMAL_RANGE .................................................................................. 12 
+1.28 
+FC142_LMU_HW_OVERTEMP ........................................................................................................................... 12 
+1.29 
+FC143_PACK_OUT_OF_BALANCE ................................................................................................................... 12 
+1.30 
+FC144_PRECHARGE_RESISTOR_PROTECTION ............................................................................................. 13 
+1.31 
+FC146_PRECHARGE_FAILURE .......................................................................................................................... 13 
+1.32 
+FC147_HVIL_FAULT ............................................................................................................................................ 13 
+1.33 
+FC148_CONTACTOR_STATUS_MISMATCH ................................................................................................... 14 
+1.34 
+FC149_CELL_VOLTAGE_FAR_BELOW_NORMAL_RANGE_DERATE....................................................... 14 
+1.35 
+FC150_PACK_CURRENT_SENSOR_OOR ......................................................................................................... 15 
+1.36 
+FC151_PACK_CURRENT_SENSOR_PARTIAL_OOR ...................................................................................... 15 
+1.37 
+FC152_PACK_VOLTAGE_SENSOR_OOR ......................................................................................................... 15 
+1.38 
+FC153_CURRENT_SENSOR_MISMATCH ......................................................................................................... 16 
+1.39 
+FC154_MCU_HW_FAILURE ................................................................................................................................ 16 
+1.40 
+FC155_MCU_SUPPLY_VOLTAGE_ABOVE_NORMAL_RANGE................................................................... 16 
+1.41 
+FC156_MCU_SUPPLY_VOLTAGE_FAR_ABOVE_NORMAL_RANGE ......................................................... 17 
+1.42 
+FC157_MCU_SUPPLY_VOLTAGE_BELOW_NORMAL_RANGE .................................................................. 17 
+1.43 
+FC158_MCU_SUPPLY_VOLTAGE_FAR_BELOW_NORMAL_RANGE ........................................................ 17 
+1.44 
+FC159_TEMPERATURE_SENSOR_OOR ........................................................................................................... 18 
+1.45 
+FC160_CONFIGURATION_ERROR .................................................................................................................... 19 
+1.46 
+FC161_EXTERNAL_ISOLATION_DETECTOR ................................................................................................. 19 
+1.47 
+FC162_LMU_HW_FAILURE ................................................................................................................................ 20 
+1.48 
+FC163_AUX_WARN ............................................................................................................................................. 20 
+1.49 
+FC164_AUX_DISCONNECT ................................................................................................................................ 20 
+1.50 
+FC165_AUX_ESTOP ............................................................................................................................................. 21 
+1.51 
+FC166_CHANGE_IN_TEMPERATURE_FOR_CELL_ABOVE_ALLOWED_LIMIT ...................................... 21 
+1.52 
+FC167_CELL_VOLTAGE_FAR_OUTSIDE_NORMAL_RANGE ..................................................................... 21 
+2. 
+REVISION HISTORY .................................................................................................................................................... 21 
+ 
+
+===== PAGE 3 =====
+Title: BMS DTC List 
+Document:  3343572 (R2) 
+Page 3 of 21 
+ 
+Altairnano Business Confidential Information-Authorized Third Party Use ONLY 
+Altairnano Restricted Distribution. To be viewed by Addressee Only. 
+This information is proprietary to Altairnano. Any unauthorized reproduction, use or disclosure of this material, or 
+any part thereof, is strictly prohibited. 
+1. DIAGNOSTIC TROUBLE CODES (DTC’S) USED 
+ 
+The following DTCs are supported for the Altairnano Battery Management Unit (BMU 000-090-0065). 
+1.1 
+FC101_EXTERNAL_ESTOP_FAULT 
+The application has requested an emergency-stop. 
+DTC Parameter 
+n/a 
+DTC Accommodation Level 
+E-Stop 
+DTC Clearing 
+Auto-Clear 
+Source 
+Application Controller 
+Description 
+Data 3 or Command Bit Map in Application Command message, 
+bit 0 = “External E-Stop”.  If set to ‘1’, the BMU shall perform its 
+emergency stop procedure, including setting the “External E-
+Stop” bit in the DTC message, the same as if a Level 4 DTC was 
+detected. 
+Configurable 
+No 
+Configuration  Option 
+None 
+ 
+1.2 
+FC103_COMM_TIMEOUT_APP_BUS 
+Communication is lost with the application controller.  This communication could be over the external CAN 
+bus or on MODBUS RS-485. 
+DTC Parameter 
+n/a 
+DTC Accommodation Level 
+Disconnect 
+DTC Clearing 
+Auto-Clear 
+Source 
+Application Controller 
+Description 
+If the BMU does not receive the Application Command Message 
+for a period set by C_App_CAN_Timeout_Logic, it shall activate 
+a disconnect DTC. (2 seconds is default) 
+Configurable 
+Yes 
+Configuration  Option 
+1 sec, 2 sec, or 4 sec 
+ 
+1.3 
+FC104_LMU_NOT_REPORTING 
+No information has been received from a particular LMU for a period of time. 
+DTC Parameter 
+LMU ID 
+DTC Accommodation Level 
+Disconnect 
+DTC Clearing 
+Auto-Clear 
+Source 
+BMU 
+Description 
+Internal CAN Communication inactive 
+Configurable  
+No 
+Configuration  Option 
+None 
+ 
+
+===== PAGE 4 =====
+Title: BMS DTC List 
+Document:  3343572 (R2) 
+Page 4 of 21 
+ 
+Altairnano Business Confidential Information-Authorized Third Party Use ONLY 
+Altairnano Restricted Distribution. To be viewed by Addressee Only. 
+This information is proprietary to Altairnano. Any unauthorized reproduction, use or disclosure of this material, or 
+any part thereof, is strictly prohibited. 
+1.4 
+FC105_PACK_VOLTAGE_MISMATCH 
+The measured unswitched pack voltage differs significantly from the sum of the cell-group voltages. 
+DTC Parameter 
+n/a 
+DTC Accommodation Level 
+Disconnect 
+DTC Clearing 
+Latched 
+Source 
+BMU 
+Description 
+Difference comparison between measured un-switched 
+pack voltage and the summation of cell-group voltages to 
+the set-point [C_Pack_to_Sum_cg_Volts_Diff_Limit] = 
+8.0 volts 
+Configurable 
+Yes.  
+Configuration  Option 
+Difference 
+ 
+1.5 
+FC106_CELL_TEMPERATURE_ABOVE_NORMAL_RANGE 
+One or more battery temperature inputs is reading above the normal operating range. 
+DTC Parameter 
+Zone 
+DTC Accommodation Level 
+Derate 
+DTC Clearing 
+Auto-Clear 
+Source 
+BMU 
+Description 
+Cell group temperature at or above set-point 
+[C_cg_Temperature_Normal_UL] = 55.0 deg C 
+Configurable 
+Yes. 
+Configuration  Option 
+High Cell Temperature and derate value 
+ 
+1.6 
+FC107_CELL_TEMPERATURE_BELOW_NORMAL_RANGE 
+One or more battery temperature inputs is reading below the normal operating range. 
+DTC Parameter 
+Zone 
+DTC Accommodation Level 
+Warning 
+DTC Clearing 
+Auto-Clear 
+Source 
+BMU 
+Description 
+Cell Temperature at or below set-point 
+[C_cg_Temperature_Normal_LL] = 5.0 deg C 
+Configurable 
+Yes 
+Configuration  Option 
+Low Cell Temperature 
+ 
+
+===== PAGE 5 =====
+Title: BMS DTC List 
+Document:  3343572 (R2) 
+Page 5 of 21 
+ 
+Altairnano Business Confidential Information-Authorized Third Party Use ONLY 
+Altairnano Restricted Distribution. To be viewed by Addressee Only. 
+This information is proprietary to Altairnano. Any unauthorized reproduction, use or disclosure of this material, or 
+any part thereof, is strictly prohibited. 
+1.7 
+FC108_CELL_TEMPERATURE_FAR_ABOVE_NORMAL_RANGE 
+One or more battery temperature input is reading far above the normal operating range. 
+DTC Parameter 
+Zone 
+DTC Accommodation Level 
+Disconnect 
+DTC Clearing 
+Auto-Clear 
+Source 
+BMU 
+Description 
+Cell group temperature at or above set-point 
+[C_cg_Temperature_Extreme_UL] = 70.0 deg C 
+Configurable 
+Yes  
+Configuration  Option 
+Maximum Cell Temperature 
+ 
+1.8 
+FC109_CELL_TEMPERATURE_FAR_BELOW_NORMAL_RANGE 
+One or more battery temperature input is reading far below the normal operating range. 
+DTC Parameter 
+Zone 
+DTC Accommodation Level 
+Disconnect 
+DTC Clearing 
+Auto-Clear 
+Source 
+BMU 
+Description 
+Cell group temperature at or below set-point 
+[C_cg_Temperature_Extreme_LL] = -45.0 deg C 
+Configurable 
+Yes  
+Configuration  Option 
+Minimum Cell Temperature 
+ 
+1.9 
+FC110_CELL_VOLTAGE_ABOVE_NORMAL_RANGE 
+One or more cell-group voltage measurement is above the normal operating range. 
+DTC Parameter 
+Cell group ID 
+DTC Accommodation Level 
+Warning 
+DTC Clearing 
+Auto-Clear 
+Source 
+BMU 
+Description 
+Cell group voltage at or above set-point 
+[C_cg_Voltage_Normal_UL] = 2.800 volts 
+Configurable  
+Yes 
+Configuration  Option 
+High Cell Voltage 
+ 
+1.10 FC111_CELL_VOLTAGE_BELOW_NORMAL_RANGE 
+One or more cell-group voltage measurement is below the normal operating range. 
+DTC Parameter 
+Cell group ID 
+DTC Accommodation Level 
+Warning 
+DTC Clearing 
+Auto-Clear 
+Source 
+BMU 
+Description 
+Cell group voltage at or below set-point 
+[C_cg_Voltage_Normal_LL] = 1.700 volts 
+Configurable  
+Yes 
+Configuration  Option 
+Low Cell Voltage 
+
+===== PAGE 6 =====
+Title: BMS DTC List 
+Document:  3343572 (R2) 
+Page 6 of 21 
+ 
+Altairnano Business Confidential Information-Authorized Third Party Use ONLY 
+Altairnano Restricted Distribution. To be viewed by Addressee Only. 
+This information is proprietary to Altairnano. Any unauthorized reproduction, use or disclosure of this material, or 
+any part thereof, is strictly prohibited. 
+ 
+1.11 FC112_CELL_VOLTAGE_FAR_ABOVE_NORMAL_RANGE 
+One or more cell-group voltage measurement is far above the normal operating range. 
+DTC Parameter 
+Cell group ID 
+DTC Accommodation Level 
+Disconnect 
+DTC Clearing 
+Auto-Clear 
+Source 
+BMU 
+Description 
+Cell group voltage at or above set-point 
+[C_cg_Voltage_Extreme_UL] = 3.000 volts 
+Configurable 
+Yes  
+Configuration  Option 
+Maximum Cell Voltage 
+ 
+1.12 FC113_CELL_VOLTAGE_FAR_BELOW_NORMAL_RANGE 
+One or more cell-group voltage measurement is far below the normal operating range. 
+DTC Parameter 
+Cell group ID 
+DTC Accommodation Level 
+Disconnect 
+DTC Clearing 
+Auto-Clear 
+Source 
+BMU 
+Description 
+Cell group voltage at or below set-point 
+[C_cg_Voltage_Extreme_LL] = 1.500 volts 
+Configurable 
+Yes  
+Configuration  Option 
+Minimum Cell Voltage 
+ 
+1.13 FC114_MCU_POWER_SUPPLY_FAULT 
+The battery management unit’s internal power supply output, which powers the LMUs, is experiencing a 
+current overload. 
+This can be caused by any of the following conditions: 
+(a) power supply input voltage too high 
+(b) power supply input voltage too low 
+(c) power supply output current overload 
+(d) power supply output short circuit 
+DTC Parameter 
+n/a 
+DTC Accommodation Level 
+Disconnect 
+DTC Clearing 
+Auto-Clear 
+Source 
+BMU 
+Description 
+Noted in (a) or (b) or (c) or (d) 
+Configurable 
+No 
+Configuration  Option 
+None 
+ 
+
+===== PAGE 7 =====
+Title: BMS DTC List 
+Document:  3343572 (R2) 
+Page 7 of 21 
+ 
+Altairnano Business Confidential Information-Authorized Third Party Use ONLY 
+Altairnano Restricted Distribution. To be viewed by Addressee Only. 
+This information is proprietary to Altairnano. Any unauthorized reproduction, use or disclosure of this material, or 
+any part thereof, is strictly prohibited. 
+ 
+ 
+1.14 FC115_CELL_VOLTAGE_SENSOR_OOR 
+One or more cell-group voltage input reading is out of range.  This typically occurs when the wiring harness 
+is disconnected from the battery. 
+DTC Parameter 
+Cell group ID 
+DTC Accommodation Level 
+Disconnect 
+DTC Clearing 
+Auto-Clear 
+Source 
+BMU 
+Description 
+A/D counts for cell group voltage reported outside the 
+limits 
+Configurable 
+No 
+Configuration  Option 
+None 
+ 
+1.15 FC116_CHARGE_CURRENT_ABOVE_CMD_LIMIT 
+Charge current is greater than C_Current_Limit_Cmd_Threshold parameter. Default is 103% of 
+C_Current_Max parameter.  This happens when charge device is not respecting BMU current limit published 
+on CAN bus. 
+DTC Parameter 
+Current measurement 
+DTC Accommodation Level 
+Warning 
+DTC Clearing 
+Auto-Clear 
+Source 
+BMU 
+Description 
+The charge current is above the BMS’ charge current 
+limit for a period of time. This indicates the Application 
+Control Unit is not respecting the limits set by the BMS. 
+Hence, if this occurs there is a coordination problem 
+between the BMS and the Application Control Unit. 
+Configurable 
+Yes 
+Configuration  Option 
+C_Overcurrent_Protection_Enable and 
+C_Current_Limit_Cmd_Threshold 
+
+===== PAGE 8 =====
+Title: BMS DTC List 
+Document:  3343572 (R2) 
+Page 8 of 21 
+ 
+Altairnano Business Confidential Information-Authorized Third Party Use ONLY 
+Altairnano Restricted Distribution. To be viewed by Addressee Only. 
+This information is proprietary to Altairnano. Any unauthorized reproduction, use or disclosure of this material, or 
+any part thereof, is strictly prohibited. 
+ 
+1.16 FC117_CHARGE_CURRENT_FAR_ABOVE_CMD_LIMIT 
+Charge current is greater than C_Overcurrent_UL parameter. Default is 150% of C_Current_Max parameter.  
+Charge current is greater than C_Overcurrent_Factor parameter for a length greater than 
+C_Overcurrent_Detection_Time. Default is 110% of C_Current_Max parameter for 3 seconds.  This happens 
+when charge device is not respecting BMU current limit published on CAN bus. 
+DTC Parameter 
+Current measurement 
+DTC Accommodation Level 
+Disconnect 
+DTC Clearing 
+Latched (Requires reset signal sent in application 
+command message) 
+Source 
+BMU 
+Description 
+The charge current is far above the BMS’ charge current 
+limit for a period of time. This indicates the Application 
+Control Unit is not respecting the limits set by the BMS. 
+Hence, if this occurs there is a coordination problem 
+between the BMS and the Application Control Unit. 
+Configurable 
+Yes 
+Configuration  Option 
+C_Overcurrent_Protection_Enable, C_Overcurrent_UL, 
+C_Overcurrent_Factor and 
+C_Overcurrent_Detection_Time 
+ 
+1.17 FC122_DISCONNECT_TOO_SLOW 
+The BMS attempted a normal disconnect sequence, but current didn't go to zero as fast as required. 
+DTC Parameter 
+n/a 
+DTC Accommodation Level 
+E-Stop 
+DTC Clearing 
+Latched 
+Source 
+BMU 
+Description 
+If the BMU is in the STOPPING state for longer than a 
+timeout period (approximately 5 seconds), the BMU shall 
+activate a Level 4  (E-STOP) DTC (“Disconnect too 
+slow”). [C_Stopping_Disconnect_Time] = 5000 ms 
+Configurable 
+Yes. 
+Configuration  Option 
+Time  
+ 
+
+===== PAGE 9 =====
+Title: BMS DTC List 
+Document:  3343572 (R2) 
+Page 9 of 21 
+ 
+Altairnano Business Confidential Information-Authorized Third Party Use ONLY 
+Altairnano Restricted Distribution. To be viewed by Addressee Only. 
+This information is proprietary to Altairnano. Any unauthorized reproduction, use or disclosure of this material, or 
+any part thereof, is strictly prohibited. 
+ 
+ 
+1.18 FC123_MAIN_CONTACTOR_FAULT 
+The BMS attempted to close the main contactor but switched voltage is not equal to un-switched voltage. 
+DTC Parameter 
+n/a 
+DTC Accommodation Level 
+Disconnect 
+DTC Clearing 
+Latched 
+Source 
+BMU 
+Description 
+Triggered if difference between un-switched and switched 
+voltage is greater than the value set by 
+[C_Precharge_Voltage_Tolerance] = 0.02 * pack voltage 
+while main positive contactor is closed 
+Configurable  
+Yes 
+Configuration  Option 
+Voltage difference (only applies if configured for Internal 
+Contactor Control) 
+ 
+1.19 FC128_CURRENT_SENSOR_LARGE_OFFSET 
+The current sensor has an offset that is larger than normal range. 
+DTC Parameter 
+current sensor #1 or #2 
+DTC Accommodation Level 
+Warning 
+DTC Clearing 
+Auto-Clear 
+Source 
+BMU 
+Description 
+When auto-zero occurs, if the voltage from a current 
+sensor is different from the zero-amp voltage in the 
+current sensor calibration table by more than 
+[C_Current_Sensor_Offset_Warning_Limit] = 0.200 
+volts, FC128 will be triggered 
+Configurable 
+Yes 
+Configurable  Option 
+Allowable current sensor zero-amp voltage offset 
+ 
+1.20 FC130_MULTI_STRING_ADDRESS_MISMATCH 
+In a multi-string configuration, the CAN address from stored in EEPROM from a previous run of the BMU 
+differs from that determined from the current value of discrete inputs. 
+DTC Parameter 
+n/a 
+DTC Accommodation Level 
+Warning 
+DTC Clearing 
+Auto-Clear 
+Source 
+BMU 
+Description 
+BMU CAN address stored in EEPROM from a previous 
+run differs from that determined from the current value of 
+discrete inputs 
+Configurable 
+No 
+Configurable Parameter 
+None 
+ 
+
+===== PAGE 10 =====
+Title: BMS DTC List 
+Document:  3343572 (R2) 
+Page 10 of 21 
+ 
+Altairnano Business Confidential Information-Authorized Third Party Use ONLY 
+Altairnano Restricted Distribution. To be viewed by Addressee Only. 
+This information is proprietary to Altairnano. Any unauthorized reproduction, use or disclosure of this material, or 
+any part thereof, is strictly prohibited. 
+1.21 FC131_MULTI_STRING_COMM_TIMEOUT 
+The BMU acting as multi-string coordinator has not received communication from one of the BMU strings 
+for a pre-configured period of time. 
+DTC Parameter 
+BMU # 
+DTC Accommodation Level 
+Warning 
+DTC Clearing 
+Auto-Clear 
+Source 
+BMU 
+Description 
+Loss of Communication 
+Configurable 
+No 
+Configuration Option 
+None 
+ 
+1.22 FC133_DISCHARGE_CURRENT_ABOVE_CMD_LIMIT 
+Discharge current is greater than C_Current_Limit_Cmd_Threshold parameter. Default is 103% of 
+C_Current_Max parameter.  This happens when discharge device is not respecting BMU current limit 
+published on CAN bus. 
+DTC Parameter 
+Current measurement 
+DTC Accommodation Level 
+Warning 
+DTC Clearing 
+Auto-Clear 
+Source 
+BMU 
+Description 
+The discharge current is above the BMS’ charge current 
+limit for a period of time. This indicates the Application 
+Control Unit is not respecting the limits set by the BMS. 
+Hence, if this occurs there is a coordination problem 
+between the BMS and the Application Control Unit. 
+Configurable 
+Yes 
+Configuration  Option 
+C_Overcurrent_Protection_Enable and 
+C_Current_Limit_Cmd_Threshold 
+ 
+
+===== PAGE 11 =====
+Title: BMS DTC List 
+Document:  3343572 (R2) 
+Page 11 of 21 
+ 
+Altairnano Business Confidential Information-Authorized Third Party Use ONLY 
+Altairnano Restricted Distribution. To be viewed by Addressee Only. 
+This information is proprietary to Altairnano. Any unauthorized reproduction, use or disclosure of this material, or 
+any part thereof, is strictly prohibited. 
+1.23 FC134_DISCHARGE_CURRENT_FAR_ABOVE_CMD_LIMIT 
+Discharge current is greater than C_Overcurrent_UL parameter. Default is 150% of C_Current_Max 
+parameter.  Discharge current is greater than C_Overcurrent_Factor parameter for a length greater than 
+C_Overcurrent_Detection_Time. Default is 110% of C_Current_Max parameter for 3 seconds.  This happens 
+when charge device is not respecting BMU current limit published on CAN bus. 
+DTC Parameter 
+Current measurement 
+DTC Accommodation Level 
+Disconnect 
+DTC Clearing 
+Latched (Requires reset signal sent in application 
+command message) 
+Source 
+BMU 
+Description 
+The discharge current is far above the BMS’ discharge 
+current limit for a period of time. This indicates the 
+Application Control Unit is not respecting the limits set 
+by the BMS. Hence, if this occurs there is a coordination 
+problem between the BMS and the Application Control 
+Unit. 
+Configurable 
+Yes 
+Configuration  Option 
+C_Overcurrent_Protection_Enable, C_Overcurrent_UL, 
+C_Overcurrent_Factor and 
+C_Overcurrent_Detection_Time 
+ 
+1.24 FC137_MCU_TEMP_BELOW_NORMAL_RANGE 
+The MCU internal temperature is below the normal operating range. 
+DTC Parameter 
+n/a 
+DTC Accommodation Level 
+Warning 
+DTC Clearing 
+Auto-Clear 
+Source 
+BMU 
+Description 
+BMU temperature below the set-point 
+Configurable  
+No 
+Configuration  Option 
+None 
+ 
+1.25 FC138_MCU_TEMP_FAR_BELOW_NORMAL_RANGE 
+The Battery management unit’s internal temperature is far below the normal operating range. 
+DTC Parameter 
+n/a 
+DTC Accommodation Level 
+Disconnect/sleep-mode 
+DTC Clearing 
+Latched (Requires Wake-up line toggle) 
+Source 
+BMU 
+Description 
+BMU hardware temperature below the rated value 
+Configurable  
+No 
+Configuration  Option 
+None 
+ 
+
+===== PAGE 12 =====
+Title: BMS DTC List 
+Document:  3343572 (R2) 
+Page 12 of 21 
+ 
+Altairnano Business Confidential Information-Authorized Third Party Use ONLY 
+Altairnano Restricted Distribution. To be viewed by Addressee Only. 
+This information is proprietary to Altairnano. Any unauthorized reproduction, use or disclosure of this material, or 
+any part thereof, is strictly prohibited. 
+1.26 FC139_MCU_TEMP_ABOVE_NORMAL_RANGE 
+The Battery management unit’s internal temperature is above the normal operating range. 
+DTC Parameter 
+n/a 
+DTC Accommodation Level 
+Warning 
+DTC Clearing 
+Auto-Clear 
+Source 
+BMU 
+Description 
+BMU temperature above the set-point 
+Configurable  
+No 
+Configuration  Option 
+None 
+ 
+1.27 FC140_MCU_TEMP_FAR_ABOVE_NORMAL_RANGE 
+The Battery management unit’s internal temperature is far above the normal operating range. 
+DTC Parameter 
+n/a 
+DTC Accommodation Level 
+Disconnect/sleep-mode 
+DTC Clearing 
+Latched (Requires Wake-up line toggle) 
+Source 
+BMU 
+Description 
+BMU temperature above the rated value 
+Configurable  
+No 
+Configuration  Option 
+None 
+ 
+1.28 FC142_LMU_HW_OVERTEMP 
+The internal temperature of one or more of the LMUs is above the normal operating range. 
+DTC Parameter 
+LMU ID 
+DTC Accommodation Level 
+Disconnect/sleep-mode 
+DTC Clearing 
+Latched (Requires Wake-up line toggle) 
+Source 
+LMU 
+Description 
+LMU HW temperature above the set-point 
+Configurable  
+No 
+Configuration  Option 
+None 
+ 
+1.29 FC143_PACK_OUT_OF_BALANCE 
+The state-of-charge difference between the most charged and least charged cell-groups is too high. 
+DTC Parameter 
+Low Cell group ID 
+DTC Accommodation Level 
+Warning 
+DTC Clearing 
+Auto-Clear 
+Source 
+BMU 
+Description 
+SOC Comparison between most charged and least 
+charged cell group  
+Configurable  
+No 
+Configuration  Option 
+None 
+ 
+
+===== PAGE 13 =====
+Title: BMS DTC List 
+Document:  3343572 (R2) 
+Page 13 of 21 
+ 
+Altairnano Business Confidential Information-Authorized Third Party Use ONLY 
+Altairnano Restricted Distribution. To be viewed by Addressee Only. 
+This information is proprietary to Altairnano. Any unauthorized reproduction, use or disclosure of this material, or 
+any part thereof, is strictly prohibited. 
+ 
+1.30 FC144_PRECHARGE_RESISTOR_PROTECTION 
+The pre-charge sequence is temporarily disabled to prevent excessive temperature from building up in the 
+precharge resistor. 
+DTC Parameter 
+n/a 
+DTC Accommodation Level 
+Disconnect 
+DTC Clearing 
+Auto-Clear 
+Source 
+BMU 
+Description 
+Maximum allowable estimated rise in temperature 
+before a precharge resistor fault is triggered. 
+Configurable 
+Yes 
+Configuration  Parameters 
+[C_Precharge_Resistor_Delta_T] = 10.0 deg C and 
+[C_Precharge_Rise_Tolerance] = 50.0 deg C 
+ 
+1.31 FC146_PRECHARGE_FAILURE 
+The attempt to precharge the load failed. 
+DTC Parameter 
+n/a 
+DTC Accommodation Level 
+Disconnect 
+DTC Clearing 
+Latched 
+Source 
+BMU 
+Description 
+Triggered during precharge if the difference 
+between un-switched and switched voltage is 
+greater than the value set by 
+[C_Precharge_Voltage_Tolerance] = 0.200 volts 
+Configurable  
+Yes  
+Configuration  Option 
+Voltage difference (only applies if configured for 
+Internal Contactor Control) 
+ 
+1.32 FC147_HVIL_FAULT 
+The High Voltage Interlock Loop circuit is open. 
+DTC Parameter 
+n/a 
+DTC Accommodation Level 
+E-Stop 
+DTC Clearing 
+Latched 
+Source 
+BMU 
+Description 
+Fault reported by external hazardous voltage 
+interlock circuit [C_HVIL_Enable] = 1     
+Configurable 
+Yes 
+Configuration parameter 
+HVIL Function 
+
+===== PAGE 14 =====
+Title: BMS DTC List 
+Document:  3343572 (R2) 
+Page 14 of 21 
+ 
+Altairnano Business Confidential Information-Authorized Third Party Use ONLY 
+Altairnano Restricted Distribution. To be viewed by Addressee Only. 
+This information is proprietary to Altairnano. Any unauthorized reproduction, use or disclosure of this material, or 
+any part thereof, is strictly prohibited. 
+ 
+1.33 FC148_CONTACTOR_STATUS_MISMATCH 
+The sensed status of a contactor differs from its commanded status. 
+NOTE:  Parameters for FC148_CONTACTOR_STATUS_MISMATCH are: 
+0 = Main positive commanded open, but sensed closed 
+1 = Main positive commanded closed, but sensed open 
+2 = Main negative commanded open, but sensed closed 
+3 = Main negative commanded closed, but sensed open 
+DTC Parameter 
+n/a 
+DTC Accommodation Level 
+Disconnect 
+DTC Clearing 
+Latched 
+Source 
+BMU 
+Description 
+Fault reported by external hazardous voltage 
+interlock circuit 
+[C_Main_Neg_Contactor_Status_Mask] 
+[C_Main_Pos_Contactor_Status_Mask] 
+Configurable 
+Yes 
+Configuration parameter 
+Off or I/O pin assignment 
+ 
+1.34 FC149_CELL_VOLTAGE_FAR_BELOW_NORMAL_RANGE_DERATE 
+One or more cell group voltage measurements is reading far below the normal operating range. The DTC 
+was removed in v18 firmware, but may be present in older versions. 
+DTC Parameter 
+n/a 
+DTC Accommodation Level 
+Derate 
+DTC Clearing 
+Auto-Clear 
+Source 
+BMU 
+Description 
+Decreases pack allowed current to 10% of 
+maximum value 
+[C_cg_Voltage_Normal_LL] = 1.700 volts 
+[C_FC149_Derate] = 90% 
+Configurable 
+Yes 
+Configuration Option 
+Cell voltage value and derate % 
+ 
+
+===== PAGE 15 =====
+Title: BMS DTC List 
+Document:  3343572 (R2) 
+Page 15 of 21 
+ 
+Altairnano Business Confidential Information-Authorized Third Party Use ONLY 
+Altairnano Restricted Distribution. To be viewed by Addressee Only. 
+This information is proprietary to Altairnano. Any unauthorized reproduction, use or disclosure of this material, or 
+any part thereof, is strictly prohibited. 
+ 
+1.35 FC150_PACK_CURRENT_SENSOR_OOR 
+The pack current sensor is out-of-range.  Typically, this indicates the sensor is not properly connected to the 
+BMS. 
+DTC Parameter 
+n/a 
+DTC Accommodation Level 
+Disconnect 
+DTC Clearing 
+Auto-Clear 
+Source 
+BMU 
+Description 
+Difference comparison between reported value and 
+A/D set-point  
+[Pack_Current_Sensor_OOR_LL] = 205 counts 
+[Pack_Current_Sensor_OOR_UL] = 3891 counts 
+Configurable 
+Yes 
+Configuration Option 
+A/D Counts 
+ 
+1.36 FC151_PACK_CURRENT_SENSOR_PARTIAL_OOR 
+In the case of a dual-pickup current sensor, one of the two sensor pickups is out-of-range (most likely 
+disconnected from the BMS), but the other is operating in range. 
+DTC Parameter 
+problem sensor #1 or #2 
+DTC Accommodation Level 
+Warning 
+DTC Clearing 
+Auto-Clear 
+Source 
+BMU 
+Description 
+In a dual pick up configuration, either of the current 
+sensor counts is above the set-point 
+[Pack_Current_Sensor_OOR_LL] = 205 counts 
+[Pack_Current_Sensor_OOR_UL] = 3891 counts 
+Configurable 
+Yes 
+Configuration Option 
+Counts 
+ 
+1.37 FC152_PACK_VOLTAGE_SENSOR_OOR 
+The pack voltage sense input is out-of-range.  Typically this occurs if the wiring harness is not connected. 
+DTC Parameter 
+n/a 
+DTC Accommodation Level 
+Derate 
+DTC Clearing 
+Auto-Clear 
+Source 
+BMU 
+Description 
+A/D counts for pack voltage reported outside  the 
+limits 
+Configurable 
+Yes 
+Configuration  Option 
+Derate value 
+ 
+
+===== PAGE 16 =====
+Title: BMS DTC List 
+Document:  3343572 (R2) 
+Page 16 of 21 
+ 
+Altairnano Business Confidential Information-Authorized Third Party Use ONLY 
+Altairnano Restricted Distribution. To be viewed by Addressee Only. 
+This information is proprietary to Altairnano. Any unauthorized reproduction, use or disclosure of this material, or 
+any part thereof, is strictly prohibited. 
+1.38 FC153_CURRENT_SENSOR_MISMATCH 
+In a dual-sensor configuration, the currents reported by the two current sensors are mismatched. 
+DTC Parameter 
+n/a 
+DTC Accommodation Level 
+Warning 
+DTC Clearing 
+Auto-Clear 
+Source 
+BMU 
+Description 
+Difference between the values reported by each 
+sensor in a dual sensor configuration is above a 
+set-point. [C_Current_Mismatch_Limit] = 0.10 * 
+maximum system current 
+Configurable 
+Yes 
+Configuration Option 
+Difference 
+ 
+1.39 FC154_MCU_HW_FAILURE 
+Battery management unit internal errors 
+NOTE:  Parameters for FC154_MCU_HW_FAILURE are: 
+0 = MCU_HW_FAULT_EEPROM_ACK_FAILURE 
+1 = MCU_HW_FAULT_EEPROM_COMM_FAILURE 
+2 = MCU_HW_FAULT_SUPPLY_COMM_FAILURE 
+3 = MCU_HW_FAULT_AN1_COMM_FAILURE 
+4 = MCU_HW_FAULT_AN2_COMM_FAILURE 
+5 = MCU_HW_FAULT_INTERNAL_TEMP_SENSOR_FAILURE 
+6 = MCU_HW_FAULT_CURRENT_SENSOR1_FAILURE 
+7 = MCU_HW_FAULT_CURRENT_SENSOR2_FAILURE 
+DTC Parameter 
+MCU-HW-failure ID 
+DTC Accommodation Level 
+Disconnect 
+DTC Clearing 
+Auto-Clear 
+Source 
+BMU 
+Description 
+Active 0 or 1 or 2 or 3 or 4 or 5 or 6 or 7  
+Configurable  
+No 
+Configuration  Option 
+None 
+ 
+1.40 FC155_MCU_SUPPLY_VOLTAGE_ABOVE_NORMAL_RANGE 
+The power supply voltage to the battery management unit is above the normal operating range. 
+DTC Parameter 
+n/a 
+DTC Accommodation Level 
+Warning 
+DTC Clearing 
+Auto-Clear 
+Source 
+BMU 
+Description 
+MCU voltage above the set-point 
+Configurable  
+No 
+Configuration  Option 
+None 
+ 
+
+===== PAGE 17 =====
+Title: BMS DTC List 
+Document:  3343572 (R2) 
+Page 17 of 21 
+ 
+Altairnano Business Confidential Information-Authorized Third Party Use ONLY 
+Altairnano Restricted Distribution. To be viewed by Addressee Only. 
+This information is proprietary to Altairnano. Any unauthorized reproduction, use or disclosure of this material, or 
+any part thereof, is strictly prohibited. 
+1.41 FC156_MCU_SUPPLY_VOLTAGE_FAR_ABOVE_NORMAL_RANGE 
+The power supply voltage to the battery management unit is far above the normal operating range. 
+DTC Parameter 
+n/a 
+DTC Accommodation Level 
+Disconnect/ sleep-mode 
+DTC Clearing 
+Latched (Requires Wake-up line toggle) 
+Source 
+BMU 
+Description 
+MCU voltage above the rated value 
+Configurable  
+No 
+Configuration  Option 
+None 
+ 
+1.42 FC157_MCU_SUPPLY_VOLTAGE_BELOW_NORMAL_RANGE 
+The power supply voltage to the battery management unit is below the normal operating range. 
+DTC Parameter 
+n/a 
+DTC Accommodation Level 
+Warning 
+DTC Clearing 
+Auto-Clear 
+Source 
+BMU 
+Description 
+MCU voltage below the set-point 
+Configurable  
+No 
+Configuration  Option 
+None 
+ 
+1.43 FC158_MCU_SUPPLY_VOLTAGE_FAR_BELOW_NORMAL_RANGE 
+The power supply voltage to the battery management unit is far below the normal operating range. 
+DTC Parameter 
+n/a 
+DTC Accommodation Level 
+Disconnect/sleep-mode 
+DTC Clearing 
+Latched (Requires Wake-up line toggle) 
+Source 
+BMU 
+Description 
+MCU voltage below the rated value 
+Configurable  
+No 
+Configuration  Option 
+None 
+ 
+
+===== PAGE 18 =====
+Title: BMS DTC List 
+Document:  3343572 (R2) 
+Page 18 of 21 
+ 
+Altairnano Business Confidential Information-Authorized Third Party Use ONLY 
+Altairnano Restricted Distribution. To be viewed by Addressee Only. 
+This information is proprietary to Altairnano. Any unauthorized reproduction, use or disclosure of this material, or 
+any part thereof, is strictly prohibited. 
+1.44 FC159_TEMPERATURE_SENSOR_OOR 
+One or more of the battery temperature sense inputs is out of range.  Typically this indicates the temperature 
+sensor is not connected to the BMS. 
+DTC Parameter 
+Zone 
+DTC Accommodation Level 
+Derate 
+DTC Clearing 
+Auto-Clear 
+Source 
+BMU 
+Description 
+Cell group temperature above set-point a 
+derate is required  
+[C_cg_Temperature_Extreme_LL] = -45.0 
+deg C 
+[C_cg_Temperature_Extreme_UL] = 70.0 deg 
+C 
+Configurable 
+Yes 
+Configuration Option 
+Temperature and derate value 
+ 
+
+===== PAGE 19 =====
+Title: BMS DTC List 
+Document:  3343572 (R2) 
+Page 19 of 21 
+ 
+Altairnano Business Confidential Information-Authorized Third Party Use ONLY 
+Altairnano Restricted Distribution. To be viewed by Addressee Only. 
+This information is proprietary to Altairnano. Any unauthorized reproduction, use or disclosure of this material, or 
+any part thereof, is strictly prohibited. 
+1.45 FC160_CONFIGURATION_ERROR 
+The BMS is not properly configured.  The DTC parameter indicates which kind of configuration problem is 
+ocurring: 
+0 = CFG_FAULT_LMU_VERSION_MISMATCH 
+1 = CFG_FAULT_BMU_MISMATCHED_NUM_CELL_GROUPS 
+2 = CFG_FAULT_BMU_MISMATCHED_NUM_TEMPERATURES 
+3 = CFG_FAULT_BMU_MISMATCHED_CONTACTOR_CFG 
+4 = CFG_FAULT_BMU_INCOMPATIBLE_SOFTWARE_VERSION 
+5 = CFG_FAULT_BMU_INCOMPATIBLE_INTERFACE_VERSION 
+6 = CFG_FAULT_APP_INCOMPATIBLE_INTERFACE_VERSION 
+7 = CFG_FAULT_UNCONFIGURED_LMU 
+8 = CFG_FAULT_BMU_INCOMPATIBLE_BUILD_ID 
+9 = CFG_FAULT_MULTI_STRING_IDENTITY 
+10 = CFG_FAULT_BMU_MISMATCHED_CG_PER_LMU 
+11 = CFG_FAULT_BMU_MISMATCHED_TEMPS_PER_LMU 
+12 = CFG_FAULT_BMU_CAN_ADDRESS 
+DTC Parameter 
+Config error ID 
+DTC Accommodation Level 
+Disconnect 
+DTC Clearing 
+Latched 
+Source 
+BMU 
+Description 
+Active 0 or 1 or 2 or 3 or 4 or 5 or 6 or 7 or 8 
+or 9 or 10 or 11 or 12  
+[C_Number_of_Cell_Groups] 
+[C_Number_of_Temp_Sensors] 
+[C_Number_of_Cell_Groups_per_LMU] 
+[C_Number_of_Temp_Sensors_per_LMU] 
+[C_Number_of_Cell_Groups_per_LRU] 
+[C_Number_of_Temp_Sensors_per_LRU] 
+[C_Number_of_Cells_cellGroup] 
+Configurable  
+No 
+Configuration  Option 
+None 
+ 
+1.46 FC161_EXTERNAL_ISOLATION_DETECTOR 
+An input from an external isolation fault sensor indicates there is insufficient resistance between the battery 
+and ground. 
+DTC Parameter 
+n/a 
+DTC Accommodation Level 
+Disconnect 
+DTC Clearing 
+Latched 
+Source 
+BMU 
+Description 
+External Isolation fault detection device fault 
+input active. External Isolation device to be 
+configured by the customer based on system 
+requirements. 
+[C_Isolation_Detection_Enable] = 0            
+Configurable  
+Yes 
+Configuration  Option 
+Isolation detection function 
+ 
+
+===== PAGE 20 =====
+Title: BMS DTC List 
+Document:  3343572 (R2) 
+Page 20 of 21 
+ 
+Altairnano Business Confidential Information-Authorized Third Party Use ONLY 
+Altairnano Restricted Distribution. To be viewed by Addressee Only. 
+This information is proprietary to Altairnano. Any unauthorized reproduction, use or disclosure of this material, or 
+any part thereof, is strictly prohibited. 
+1.47 FC162_LMU_HW_FAILURE 
+ 
+DTC Parameter 
+LMU ID 
+DTC Accommodation Level 
+Disconnect 
+DTC Clearing 
+Auto-Clear 
+Source 
+LMU 
+Description 
+LMU Hardware failure 
+Configurable 
+No 
+Configuration Option 
+None 
+ 
+1.48 FC163_AUX_WARN 
+An input from the external auxiliary fault device is active. 
+DTC Parameter 
+Aux IO Configuration 
+DTC Accommodation Level 
+Warning 
+DTC Clearing 
+Auto-Clear 
+Source 
+BMU 
+Description 
+Auxiliary Warning Fault 
+[C_AUX_Input_Fault_Logic] = 0 
+Configurable 
+Yes 
+Configuration Option 
+Off [0], Warn [1], Disconnect [2], E-stop [3] 
+ 
+ 
+1.49 FC164_AUX_DISCONNECT 
+An input from the external auxiliary fault device is active. 
+DTC Parameter 
+Aux IO Configuration 
+DTC Accommodation Level 
+Disconnect 
+DTC Clearing 
+Latched 
+Source 
+BMU 
+Description 
+Auxiliary Disconnect Fault 
+[C_AUX_Input_Fault_Logic] = 0 
+Configurable 
+Yes 
+Configuration Option 
+Off [0], Warn [1], Disconnect [2], E-stop [3] 
+ 
+
+===== PAGE 21 =====
+Title: BMS DTC List 
+Document:  3343572 (R2) 
+Page 21 of 21 
+ 
+Altairnano Business Confidential Information-Authorized Third Party Use ONLY 
+Altairnano Restricted Distribution. To be viewed by Addressee Only. 
+This information is proprietary to Altairnano. Any unauthorized reproduction, use or disclosure of this material, or 
+any part thereof, is strictly prohibited. 
+1.50 FC165_AUX_ESTOP 
+An input from the external auxiliary fault device is active. 
+DTC Parameter 
+Aux IO Configuration 
+DTC Accommodation Level 
+Disconnect 
+DTC Clearing 
+Latched 
+Source 
+BMU 
+Description 
+Auxiliary E-stop Fault 
+[C_AUX_Input_Fault_Logic] = 0 
+Configurable 
+Yes 
+Configuration Option 
+Off [0], Warn [1], Disconnect [2], E-stop [3] 
+ 
+1.51 FC166_CHANGE_IN_TEMPERATURE_FOR_CELL_ABOVE_ALLOWED_LIMIT 
+An input from the external auxiliary fault device is active. 
+DTC Parameter 
+Zone 
+DTC Accommodation Level 
+Disconnect 
+DTC Clearing 
+Latched 
+Source 
+BMU 
+Description 
+Temperature maximum rate change limit 
+[C_cg_Temperature_Delta_per_Sec] = 0 
+Configurable 
+Yes 
+Configuration Option 
+°C / second change in any temperature 
+ 
+1.52 FC167_CELL_VOLTAGE_FAR_OUTSIDE_NORMAL_RANGE 
+One or more cell voltages are measured above C_cg_Voltage_Extreme_UL or below 
+C_cg_Voltage_Extreme_LL. 
+DTC Parameter 
+Cell group ID 
+DTC Accommodation Level 
+Disconnect 
+DTC Clearing 
+Latched 
+Source 
+BMU 
+Description 
+Cell Voltage Latched Disconnect Fault 
+[C_FC167_Enable_Latch] = 0 
+Configurable 
+Yes 
+Configuration Option 
+Disable [0], Enable [1] 
+ 
+ 
+2. REVISION HISTORY 
+ 
+Revision 
+Date 
+Comments 
+1 
+07/26/2022 
+Engineering Released 
+2 
+08/31/2022 
+Added v18 Fault Codes FC166 and FC167. Updated FC149 information for v18. 
+ 

@@ -1,0 +1,50 @@
+meta:
+  name: Quick_smoke_mock
+  module_profile: LTO_24V_70Ah
+  description: "Short sequence for offline mock verification (not for real modules)."
+
+steps:
+  - id: ready
+    type: bms_ready
+    timeout_s: 30
+
+  - id: charge_burst
+    type: charge
+    current_a: 200
+    voltage_v: 27.5
+    stop:
+      ah_target: 0.5
+      timeout_s: 120
+    abort:
+      dtc_level_max: 2
+
+  - id: wait_cool
+    type: wait_temp
+    t_max_c: 40
+    timeout_s: 30
+
+  - id: discharge_cap
+    type: discharge
+    current_a: 200
+    stop:
+      ah_target: 0.5
+      pack_v_min: 17.0
+      timeout_s: 120
+    measure: capacity_ah
+
+  - id: dcir
+    type: dcir
+    pulse_a: 100
+    pulse_s: 2
+
+  - id: report
+    type: report
+    include: [capacity_ah, dcir_mohm, cells, temps, dtc]
+
+  - id: notify_done
+    type: notify
+    message: "Smoke test done."
+
+  - id: idle
+    type: bms_idle
+    timeout_s: 15
