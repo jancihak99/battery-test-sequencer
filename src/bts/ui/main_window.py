@@ -7,7 +7,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QThread, QTimer, Qt, Signal, QUrl
+from PySide6.QtCore import QTimer, Qt, Signal, QUrl
 from PySide6.QtGui import QDesktopServices, QFont, QIcon, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -60,45 +60,21 @@ from bts.ui.theme import APP_STYLESHEET, TEXT_DIM
 log = logging.getLogger(__name__)
 
 
-class _UpdateCheckWorker(QObject):
-    """Runs GitHub update check off the GUI thread (avoids freeze on SSL/timeout)."""
-
-    finished = Signal(object)  # UpdateCheckResult
-
-    def __init__(self, root: Path) -> None:
-        super().__init__()
-        self._root = root
-
-    def run(self) -> None:
-        from bts.update import check_for_update
-
-        try:
-            self.finished.emit(check_for_update(self._root))
-        except Exception as exc:
-            from bts.update import UpdateCheckResult
-            from bts.version import read_version
-
-            self.finished.emit(
-                UpdateCheckResult(
-                    local_version=read_version(self._root),
-                    remote_version=None,
-                    update_available=False,
-                    error=str(exc),
-                )
-            )
-
-
 class MainWindow(QMainWindow):
     status_tick = Signal()
     # Cross-thread marshal from sequence engine → GUI thread
     engine_status = Signal(object)
     activity_line = Signal(str)
+    # Update check result always delivered on the GUI thread
+    _update_check_done = Signal(object)
 
     def __init__(self, cfg: AppConfig) -> None:
         super().__init__()
         self.cfg = cfg
         self._app_version = "0.0.0"
-        self._update_thread: QThread | None = None
+        self._update_busy = False
+        self._update_check_interactive = False
+        self._update_watchdog: QTimer | None = None
         self._pending_release = None
         self.setWindowTitle("Battery Test Sequencer | EBZ nano power")
         self.resize(1400, 860)
@@ -128,6 +104,7 @@ class MainWindow(QMainWindow):
 
         self.engine_status.connect(self._on_engine_status)
         self.activity_line.connect(self._on_activity_line)
+        self._update_check_done.connect(self._on_update_check_signal)
 
         self._reload_lists()
         QShortcut(QKeySequence("Esc"), self, activated=self._stop_run)
@@ -719,42 +696,82 @@ class MainWindow(QMainWindow):
         self.lbl_update_status.setText("Update nastavení uloženo.")
 
     def _start_update_check(self, *, interactive: bool) -> None:
-        """GitHub check on a worker thread — never block the UI on SSL/timeout."""
-        if self._update_thread is not None and self._update_thread.isRunning():
+        """GitHub check in a daemon thread; result marshalled to GUI via Signal.
+
+        Previous QThread+lambda pattern ran the UI callback on the worker thread
+        (PySide AutoConnection), which hung the app on „Kontroluji…“.
+        """
+        if self._update_busy:
             if hasattr(self, "lbl_update_status"):
                 self.lbl_update_status.setText("Kontrola už běží…")
             return
+        self._update_busy = True
+        self._update_check_interactive = interactive
         if hasattr(self, "lbl_update_status"):
             self.lbl_update_status.setText("Kontroluji GitHub…")
         if interactive and hasattr(self, "btn_check_update"):
             self.btn_check_update.setEnabled(False)
 
-        thread = QThread(self)
-        worker = _UpdateCheckWorker(self.cfg.root)
-        worker.moveToThread(thread)
-        self._update_thread = thread
-        self._update_check_interactive = interactive
+        root = self.cfg.root
 
-        thread.started.connect(worker.run)
+        def _worker() -> None:
+            from bts.update import UpdateCheckResult, check_for_update
+            from bts.version import read_version
 
-        def _on_done(result: object) -> None:
             try:
-                self._on_update_check_finished(result, interactive=interactive)
-            finally:
-                thread.quit()
+                result = check_for_update(root)
+            except Exception as exc:
+                result = UpdateCheckResult(
+                    local_version=read_version(root),
+                    remote_version=None,
+                    update_available=False,
+                    error=str(exc),
+                )
+            # Signal is thread-safe; slot runs on GUI thread (QueuedConnection).
+            self._update_check_done.emit(result)
 
-        worker.finished.connect(_on_done)
-        thread.finished.connect(worker.deleteLater)
-        thread.finished.connect(thread.deleteLater)
+        import threading
 
-        def _clear_thread() -> None:
-            if self._update_thread is thread:
-                self._update_thread = None
-            if hasattr(self, "btn_check_update"):
-                self.btn_check_update.setEnabled(True)
+        threading.Thread(target=_worker, name="bts-update-check", daemon=True).start()
 
-        thread.finished.connect(_clear_thread)
-        thread.start()
+        # Hard UI watchdog — never leave the button stuck if network hangs.
+        if self._update_watchdog is not None:
+            self._update_watchdog.stop()
+            self._update_watchdog.deleteLater()
+        self._update_watchdog = QTimer(self)
+        self._update_watchdog.setSingleShot(True)
+
+        def _timeout() -> None:
+            if not self._update_busy:
+                return
+            from bts.update import UpdateCheckResult
+            from bts.version import read_version
+
+            self._update_check_done.emit(
+                UpdateCheckResult(
+                    local_version=read_version(self.cfg.root),
+                    remote_version=None,
+                    update_available=False,
+                    error=(
+                        "Timeout — GitHub neodpověděl do 45 s "
+                        "(síť / firewall / SSL). Zkus znovu, nebo BTS-Setup.exe z Releases."
+                    ),
+                )
+            )
+
+        self._update_watchdog.timeout.connect(_timeout)
+        self._update_watchdog.start(45_000)
+
+    def _on_update_check_signal(self, result: object) -> None:
+        """GUI-thread slot for background update check."""
+        if not self._update_busy:
+            return  # late result after watchdog already finished
+        self._update_busy = False
+        if self._update_watchdog is not None:
+            self._update_watchdog.stop()
+        if hasattr(self, "btn_check_update"):
+            self.btn_check_update.setEnabled(True)
+        self._on_update_check_finished(result, interactive=self._update_check_interactive)
 
     def _check_updates(self) -> None:
         try:

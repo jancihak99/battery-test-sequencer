@@ -197,6 +197,8 @@ def _friendly_network_error(exc: BaseException) -> str:
 
 
 def _api_get(url: str, token: str | None) -> dict[str, Any]:
+    import socket
+
     req = urllib.request.Request(
         url,
         headers={
@@ -206,8 +208,14 @@ def _api_get(url: str, token: str | None) -> dict[str, Any]:
             **({"Authorization": f"Bearer {token}"} if token else {}),
         },
     )
-    with urllib.request.urlopen(req, timeout=30, context=_ssl_context()) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    # (connect, read) — SSL/proxy hangs should not block forever
+    prev = socket.getdefaulttimeout()
+    socket.setdefaulttimeout(20.0)
+    try:
+        with urllib.request.urlopen(req, timeout=20, context=_ssl_context()) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    finally:
+        socket.setdefaulttimeout(prev)
 
 
 def fetch_latest_release(repo: str, token: str | None) -> ReleaseInfo:
