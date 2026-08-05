@@ -86,15 +86,14 @@ def _download(url: str, dest: Path) -> None:
 
 
 def _download_wheels(wheels_dir: Path) -> None:
+    """Download wheels for requirements into cache, then copy into payload dir.
+
+    Always runs ``pip download -r requirements.txt`` so version pins
+    (e.g. python-can==4.5.0) stay in sync — a stale cache of 8+ wheels
+    previously skipped refresh and broke offline Setup.
+    """
     wheels_dir.mkdir(parents=True, exist_ok=True)
     WHEEL_CACHE.mkdir(parents=True, exist_ok=True)
-    # Reuse cache when present
-    cached = list(WHEEL_CACHE.glob("*.whl"))
-    if len(cached) >= 8:
-        print(f"Using cached wheels in {WHEEL_CACHE} ({len(cached)} files)")
-        for whl in cached:
-            shutil.copy2(whl, wheels_dir / whl.name)
-        return
     py = ROOT / ".venv" / "Scripts" / "python.exe"
     if not py.exists():
         py = Path(sys.executable)
@@ -118,6 +117,7 @@ def _download_wheels(wheels_dir: Path) -> None:
         "--abi",
         "cp312",
     ]
+    print("Refreshing wheel cache from requirements.txt…")
     print(" ", " ".join(cmd))
     subprocess.run(cmd, check=True, cwd=str(ROOT))
     subprocess.run(
@@ -140,8 +140,27 @@ def _download_wheels(wheels_dir: Path) -> None:
         check=True,
         cwd=str(ROOT),
     )
+    # Drop other python-can builds so offline pip cannot pick a wrong version
+    req_text = req.read_text(encoding="utf-8")
+    pin = None
+    for line in req_text.splitlines():
+        s = line.strip()
+        if s.startswith("python-can=="):
+            pin = s.split("==", 1)[1].strip()
+            break
+    if pin:
+        for whl in list(WHEEL_CACHE.glob("python_can-*.whl")):
+            ver_part = whl.name[len("python_can-") :].split("-", 1)[0]
+            if ver_part != pin:
+                print(f"Removing stale wheel {whl.name}")
+                whl.unlink(missing_ok=True)
+
+    if wheels_dir.resolve() != WHEEL_CACHE.resolve():
+        for old in wheels_dir.glob("*.whl"):
+            old.unlink(missing_ok=True)
     for whl in WHEEL_CACHE.glob("*.whl"):
         shutil.copy2(whl, wheels_dir / whl.name)
+    print(f"Wheels ready: {len(list(wheels_dir.glob('*.whl')))} files")
 
 
 def _patch_embed_pth(extract_dir: Path) -> None:
