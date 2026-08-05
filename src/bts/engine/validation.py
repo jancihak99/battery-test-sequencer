@@ -7,6 +7,10 @@ from bts.models.program import STEP_TYPES, ModuleProfile, Program, Step
 REPORT_INCLUDE = ("capacity_ah", "dcir_mohm", "cells", "temps", "dtc")
 
 
+def _report_include_ok(item: str) -> bool:
+    return item in REPORT_INCLUDE or item.startswith("capacity_")
+
+
 def _num(v: Any) -> float | None:
     if v is None or v == "":
         return None
@@ -61,11 +65,18 @@ def validate_step(step: Step, profile: ModuleProfile, max_el_a: float) -> list[s
             e.append(f"{sid}: timeout_s must be > 0")
 
     elif t == "charge":
+        has_crate = p.get("c_rate") is not None and str(p.get("c_rate")).strip() != ""
         i = _num(p.get("current_a"))
+        crate = _num(p.get("c_rate")) if has_crate else None
+        if has_crate:
+            if crate is None or crate <= 0:
+                e.append(f"{sid}: c_rate must be > 0")
+            else:
+                i = crate * float(profile.nominal_capacity_ah)
         if i is None or i <= 0:
-            e.append(f"{sid}: current_a must be > 0")
+            e.append(f"{sid}: current_a or c_rate must be > 0")
         elif i > profile.max_continuous_current_a:
-            e.append(f"{sid}: current_a {i} > profile max {profile.max_continuous_current_a} A")
+            e.append(f"{sid}: current {i:.1f} A > profile max {profile.max_continuous_current_a} A")
         v = _num(p.get("voltage_v"))
         if v is None or v <= 0:
             e.append(f"{sid}: voltage_v must be > 0")
@@ -77,12 +88,12 @@ def validate_step(step: Step, profile: ModuleProfile, max_el_a: float) -> list[s
             stop = {}
         stop_ok = any(
             k in stop and _num(stop.get(k)) is not None
-            for k in ("pack_v_max", "cell_v_max", "soc_pct", "ah_target")
+            for k in ("pack_v_max", "cell_v_max", "soc_pct", "ah_target", "i_min_a")
         )
         if not stop_ok:
             e.append(
                 f"{sid}: charge needs at least one stop condition "
-                "(pack_v_max / cell_v_max / soc_pct / ah_target)"
+                "(pack_v_max / cell_v_max / soc_pct / ah_target / i_min_a)"
             )
         _validate_stop_abort(sid, stop, p.get("abort"), profile, e, mode="charge")
         to = p.get("timeout_s") or stop.get("timeout_s")
@@ -90,13 +101,20 @@ def validate_step(step: Step, profile: ModuleProfile, max_el_a: float) -> list[s
             e.append(f"{sid}: timeout_s must be > 0 when set")
 
     elif t == "discharge":
+        has_crate = p.get("c_rate") is not None and str(p.get("c_rate")).strip() != ""
         i = _num(p.get("current_a"))
+        crate = _num(p.get("c_rate")) if has_crate else None
+        if has_crate:
+            if crate is None or crate <= 0:
+                e.append(f"{sid}: c_rate must be > 0")
+            else:
+                i = crate * float(profile.nominal_capacity_ah)
         if i is None or i <= 0:
-            e.append(f"{sid}: current_a must be > 0")
+            e.append(f"{sid}: current_a or c_rate must be > 0")
         elif i > profile.max_continuous_current_a:
-            e.append(f"{sid}: current_a {i} > profile max {profile.max_continuous_current_a} A")
+            e.append(f"{sid}: current {i:.1f} A > profile max {profile.max_continuous_current_a} A")
         if i is not None and i > max_el_a:
-            e.append(f"{sid}: current_a {i} > EL master limit {max_el_a} A")
+            e.append(f"{sid}: current {i:.1f} A > EL master limit {max_el_a} A")
         stop = p.get("stop") or {}
         if not isinstance(stop, dict):
             e.append(f"{sid}: stop must be a mapping")
@@ -112,15 +130,42 @@ def validate_step(step: Step, profile: ModuleProfile, max_el_a: float) -> list[s
             )
         _validate_stop_abort(sid, stop, p.get("abort"), profile, e, mode="discharge")
         meas = p.get("measure")
-        if meas is not None and meas not in ("capacity_ah",):
-            e.append(f"{sid}: unknown measure '{meas}'")
+        if meas is not None and not (meas == "capacity_ah" or str(meas).startswith("capacity_")):
+            e.append(f"{sid}: measure must be capacity_ah or capacity_* key")
+
+    elif t == "goto_soc":
+        soc = _num(p.get("soc_pct"))
+        if soc is None or soc < 0 or soc > 100:
+            e.append(f"{sid}: goto_soc needs soc_pct 0..100")
+        has_crate = p.get("c_rate") is not None and str(p.get("c_rate")).strip() != ""
+        i = _num(p.get("current_a"))
+        if has_crate:
+            crate = _num(p.get("c_rate"))
+            if crate is None or crate <= 0:
+                e.append(f"{sid}: c_rate must be > 0")
+            else:
+                i = crate * float(profile.nominal_capacity_ah)
+        if i is None or i <= 0:
+            e.append(f"{sid}: current_a or c_rate must be > 0")
+        elif i > profile.max_continuous_current_a:
+            e.append(f"{sid}: current {i:.1f} A > profile max {profile.max_continuous_current_a} A")
+        if i is not None and i > max_el_a:
+            e.append(f"{sid}: current {i:.1f} A > EL limit {max_el_a} A (discharge path)")
+        _validate_stop_abort(sid, p.get("stop") or {}, p.get("abort"), profile, e, mode="charge")
 
     elif t == "dcir":
+        has_crate = p.get("c_rate") is not None and str(p.get("c_rate")).strip() != ""
         i = _num(p.get("pulse_a"))
+        if has_crate:
+            crate = _num(p.get("c_rate"))
+            if crate is None or crate <= 0:
+                e.append(f"{sid}: c_rate must be > 0")
+            else:
+                i = crate * float(profile.nominal_capacity_ah)
         if i is None or i <= 0:
-            e.append(f"{sid}: pulse_a must be > 0")
+            e.append(f"{sid}: pulse_a or c_rate must be > 0")
         elif i > max_el_a:
-            e.append(f"{sid}: pulse_a {i} > EL master limit {max_el_a} A")
+            e.append(f"{sid}: pulse {i:.1f} A > EL master limit {max_el_a} A")
         ps = _num(p.get("pulse_s"))
         if ps is None or ps <= 0:
             e.append(f"{sid}: pulse_s must be > 0")
@@ -138,7 +183,7 @@ def validate_step(step: Step, profile: ModuleProfile, max_el_a: float) -> list[s
                 e.append(f"{sid}: include must be a non-empty list")
             else:
                 for item in include:
-                    if item not in REPORT_INCLUDE:
+                    if not _report_include_ok(str(item)):
                         e.append(f"{sid}: unknown report include '{item}'")
 
     return e
@@ -159,20 +204,24 @@ def _validate_stop_abort(
             e.append(f"{sid}: stop.{key} is not a number")
     if "pack_v_max" in stop:
         v = _num(stop["pack_v_max"])
-        if v is not None and v > profile.pack_v_max + 1.0:
-            e.append(f"{sid}: stop.pack_v_max {v} above profile pack_v_max {profile.pack_v_max}")
+        if v is not None and v > profile.pack_v_max:
+            e.append(f"{sid}: stop.pack_v_max {v} above profile pack_v_max {profile.pack_v_max} — BMU may disconnect")
     if "pack_v_min" in stop:
         v = _num(stop["pack_v_min"])
-        if v is not None and v < profile.pack_v_min - 1.0:
-            e.append(f"{sid}: stop.pack_v_min {v} below profile pack_v_min {profile.pack_v_min}")
+        if v is not None and v < profile.pack_v_min:
+            e.append(f"{sid}: stop.pack_v_min {v} below profile pack_v_min {profile.pack_v_min} — BMU may disconnect")
     if "cell_v_max" in stop:
         v = _num(stop["cell_v_max"])
-        if v is not None and v > profile.cell_v_max + 0.2:
-            e.append(f"{sid}: stop.cell_v_max {v} above profile {profile.cell_v_max}")
+        if v is not None and v > profile.cell_v_max:
+            e.append(f"{sid}: stop.cell_v_max {v} above profile {profile.cell_v_max} — BMU WILL disconnect")
+        elif v is not None and v > profile.cell_v_max - 0.03:
+            e.append(f"{sid}: stop.cell_v_max {v} has <30mV margin to profile {profile.cell_v_max} — risky")
     if "cell_v_min" in stop:
         v = _num(stop["cell_v_min"])
-        if v is not None and v < profile.cell_v_min - 0.2:
-            e.append(f"{sid}: stop.cell_v_min {v} below profile {profile.cell_v_min}")
+        if v is not None and v < profile.cell_v_min:
+            e.append(f"{sid}: stop.cell_v_min {v} below profile {profile.cell_v_min} — BMU WILL disconnect")
+        elif v is not None and v < profile.cell_v_min + 0.03:
+            e.append(f"{sid}: stop.cell_v_min {v} has <30mV margin to profile {profile.cell_v_min} — risky")
     if "soc_pct" in stop:
         v = _num(stop["soc_pct"])
         if v is None or v < 0 or v > 100:
@@ -220,11 +269,7 @@ def validate_program(program: Program, profile: ModuleProfile, max_el_combined_a
     if "charge" in types_seen or "discharge" in types_seen:
         if "bms_ready" not in types_seen:
             errors.append("Programs with charge/discharge should include a bms_ready step")
-    if "discharge" in types_seen and any(
-        s.type == "discharge" and s.params.get("measure") == "capacity_ah" for s in program.steps
-    ):
-        if not any(s.type == "bms_idle" for s in program.steps):
-            errors.append("Capacity/discharge programs should end with bms_idle (open contactors)")
+    # bms_idle optional: engine post-run safe_shutdown opens contactors if still READY
 
     # Source vs load must never run in the same step (engine also enforces mutex at runtime)
     for step in program.steps:

@@ -2,7 +2,8 @@
 [CmdletBinding()]
 param(
     [string]$Root = "",
-    [switch]$Restart
+    [switch]$Restart,
+    [switch]$ForceKill
 )
 
 $ErrorActionPreference = "Stop"
@@ -17,13 +18,24 @@ if (-not (Test-Path (Join-Path $Root "main.py"))) {
 
 Write-Host "Updating BTS in $Root" -ForegroundColor Cyan
 
-Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-    Where-Object { $_.CommandLine -match "main\.py" -and $_.Name -match "python" } |
-    ForEach-Object {
-        Write-Host "Stopping PID $($_.ProcessId)"
-        Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+$running = @(
+    Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -match "main\.py" -and $_.Name -match "python" }
+)
+if ($running.Count -gt 0) {
+    if (-not $ForceKill) {
+        Write-Host "ERROR: BTS is running (PID(s): $($running.ProcessId -join ', '))." -ForegroundColor Red
+        Write-Host "Close the app with safe shutdown first, then update." -ForegroundColor Yellow
+        Write-Host "(Refusing force-kill — would leave EA/contactors unsafe.)" -ForegroundColor Yellow
+        if (-not $Restart) { pause }
+        exit 2
     }
-Start-Sleep -Seconds 1
+    foreach ($proc in $running) {
+        Write-Host "Force-stopping PID $($proc.ProcessId) (-ForceKill)" -ForegroundColor Yellow
+        Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue
+    }
+    Start-Sleep -Seconds 1
+}
 
 $py = Join-Path $Root ".venv\Scripts\python.exe"
 if (-not (Test-Path $py)) { $py = "python" }

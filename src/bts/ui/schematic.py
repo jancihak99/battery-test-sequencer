@@ -5,11 +5,15 @@ import math
 from dataclasses import dataclass
 
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer
-from PySide6.QtGui import QColor, QFont, QPainter, QPen
+from PySide6.QtGui import QColor, QFont, QPainter, QPen, QRadialGradient
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from bts.models.telemetry import BmsTelemetry, BmuState, EaTelemetry
 from bts.ui.theme import ACCENT, BORDER, CHART_BG, OK, TEXT, TEXT_DIM
+
+# Animation reference: today's full particle speed == 6C. 0 A = frozen.
+_MAX_C_RATE = 6.0
+_BASE_PHASE_STEP = 0.015  # phase advance per ~33 ms tick at 6C
 
 
 @dataclass
@@ -17,7 +21,7 @@ class _FlowPath:
     points: list[QPointF]
     color: QColor
     active: bool
-    speed: float = 1.0  # particles/sec along path
+    speed: float = 1.0  # multiplier on shared phase
 
 
 def _lerp(a: QPointF, b: QPointF, t: float) -> QPointF:
@@ -48,36 +52,67 @@ def _point_on_path(pts: list[QPointF], t: float) -> QPointF:
     return pts[-1]
 
 
+def _crate_frac(amps: float, capacity_ah: float) -> float:
+    """0 at 0 A … 1.0 at ≥ 6C (relative to pack nominal Ah)."""
+    if capacity_ah <= 0.05 or amps <= 0.05:
+        return 0.0
+    return max(0.0, min(1.0, abs(amps) / capacity_ah / _MAX_C_RATE))
+
+
 class WiringSchematic(QWidget):
     """Animated bench schematic for live current + contactor state."""
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        self.setMinimumHeight(168)
-        self.setMaximumHeight(200)
+        self.setMinimumHeight(188)
+        self.setMaximumHeight(220)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         self._bms: BmsTelemetry | None = None
         self._ea: EaTelemetry | None = None
+        self._capacity_ah = 70.0
         self._phase = 0.0
+        self._glow_phase = 0.0
+        self._flow_frac = 0.0  # smoothed 0…1 for visuals
         self._timer = QTimer(self)
         self._timer.setInterval(33)
         self._timer.timeout.connect(self._tick)
         self._timer.start()
 
-    def _tick(self) -> None:
+    def set_capacity_ah(self, ah: float) -> None:
+        self._capacity_ah = max(1.0, float(ah))
+
+    def _measured_amps(self) -> float:
         ea = self._ea
         bms = self._bms
-        pack_i = abs(bms.pack_current_a) if bms and bms.pack_current_a is not None else 0.0
-        flowing = bool(
-            (ea and ea.connected and (ea.psi_output_on or ea.el_input_on or abs(ea.psi_current_a) > 0.5 or abs(ea.el_current_a) > 0.5))
-            or pack_i > 1.0
-        )
-        if flowing:
-            # ~0.45 path lengths / second — readable one-way march
-            self._phase = (self._phase + 0.015) % 1.0
+        amps = 0.0
+        if ea and ea.connected:
+            if ea.psi_output_on or abs(ea.psi_current_a) > 0.3:
+                amps = max(amps, abs(float(ea.psi_current_a)))
+            if ea.el_input_on or abs(ea.el_current_a) > 0.3:
+                amps = max(amps, abs(float(ea.el_current_a)))
+        if bms and bms.pack_current_a is not None:
+            amps = max(amps, abs(float(bms.pack_current_a)))
+        return amps
+
+    def _tick(self) -> None:
+        amps = self._measured_amps()
+        frac = _crate_frac(amps, self._capacity_ah)
+        # Smooth so animation doesn't stutter on noisy MEAS
+        self._flow_frac += (frac - self._flow_frac) * 0.22
+        if self._flow_frac < 0.008:
+            self._flow_frac = 0.0
+
+        # Soft ambient for contactors / wait (always slow breathe)
+        self._glow_phase = (self._glow_phase + 0.045) % (math.pi * 2)
+
+        if self._flow_frac > 0:
+            # 6C → full _BASE_PHASE_STEP; 3C → half; 0 → freeze
+            self._phase = (self._phase + _BASE_PHASE_STEP * self._flow_frac) % 1.0
             self.update()
-        # No idle shimmer — only animate when current actually flows
+        else:
+            # Still refresh for contactor / idle breathe
+            self.update()
 
     def set_telemetry(self, bms: BmsTelemetry | None, ea: EaTelemetry | None) -> None:
         self._bms = bms
@@ -90,17 +125,25 @@ class WiringSchematic(QWidget):
         w, h = self.width(), self.height()
         p.fillRect(self.rect(), QColor(CHART_BG))
 
-        # Layout: pack (left) → control box → PSI / EL (right)
+        # Soft top wash when power is flowing
+        if self._flow_frac > 0.02:
+            wash = QColor(OK if self._is_charging() else "#c47a3a")
+            wash.setAlpha(int(10 + 22 * self._flow_frac))
+            grad = QRadialGradient(w * 0.55, h * 0.5, w * 0.55)
+            grad.setColorAt(0.0, wash)
+            grad.setColorAt(1.0, QColor(0, 0, 0, 0))
+            p.fillRect(self.rect(), grad)
+
         pack_x = 18
         box_x = w * 0.30
         right_x = w - 18 - 86
-        mid_y = h * 0.52
-        psi_y = h * 0.28
-        el_y = h * 0.76
+        mid_y = h * 0.50
+        psi_y = h * 0.26
+        el_y = h * 0.74
 
-        device_w, device_h = 86, 36
-        box_w, box_h = 168, 96
-        pack_w, pack_h = 108, 72
+        device_w, device_h = 86, 38
+        box_w, box_h = 168, 100
+        pack_w, pack_h = 112, 76
 
         pack_rect = QRectF(pack_x, mid_y - pack_h / 2, pack_w, pack_h)
         box_rect = QRectF(box_x, mid_y - box_h / 2, box_w, box_h)
@@ -117,20 +160,8 @@ class WiringSchematic(QWidget):
         connected_ea = bool(ea and ea.connected)
 
         pack_i = float(bms.pack_current_a) if bms and bms.pack_current_a is not None else 0.0
-        # EA flags + measured current; BMS current as fallback while run caches EA
-        charging = bool(
-            ea
-            and ea.connected
-            and (ea.psi_output_on or abs(ea.psi_current_a) > 0.5)
-        ) or (connected_bms and main_pos and main_neg and pack_i > 2.0 and not (
-            ea and ea.connected and (ea.el_input_on or abs(ea.el_current_a) > 0.5)
-        ))
-        discharging = bool(
-            ea
-            and ea.connected
-            and (ea.el_input_on or abs(ea.el_current_a) > 0.5)
-        ) or (connected_bms and main_pos and main_neg and pack_i < -2.0)
-        # Prefer EA mode if both somehow true
+        charging = self._is_charging()
+        discharging = self._is_discharging()
         if charging and discharging:
             if ea and abs(ea.el_current_a) >= abs(ea.psi_current_a):
                 charging = False
@@ -143,11 +174,9 @@ class WiringSchematic(QWidget):
         idle_wire = QColor("#b0bac4")
         live_wire = charge_color if charging else (discharge_color if discharging else idle_wire)
 
-        # --- wires (bus) ---
         pack_port = QPointF(pack_rect.right(), mid_y)
         box_left = QPointF(box_rect.left(), mid_y)
         box_right = QPointF(box_rect.right(), mid_y)
-        # Junction centered in the gap between control box and PSI/EL
         bus_junction = QPointF((box_rect.right() + psi_rect.left()) * 0.5, mid_y)
         psi_in = QPointF(psi_rect.left(), psi_rect.center().y())
         el_in = QPointF(el_rect.left(), el_rect.center().y())
@@ -159,28 +188,40 @@ class WiringSchematic(QWidget):
         el_drop = [bus_junction, QPointF(bus_junction.x(), el_in.y()), el_in]
 
         def draw_wire(pts: list[QPointF], color: QColor, width: float = 2.4, active: bool = False) -> None:
+            if active and self._flow_frac > 0.05:
+                glow = QColor(color)
+                glow.setAlpha(int(35 + 55 * self._flow_frac))
+                pen_g = QPen(glow)
+                pen_g.setWidthF(width + 3.5 + 2.5 * self._flow_frac)
+                pen_g.setCapStyle(Qt.RoundCap)
+                pen_g.setJoinStyle(Qt.RoundJoin)
+                p.setPen(pen_g)
+                for i in range(1, len(pts)):
+                    p.drawLine(pts[i - 1], pts[i])
             pen = QPen(color)
             pen.setWidthF(width)
             pen.setCapStyle(Qt.RoundCap)
             pen.setJoinStyle(Qt.RoundJoin)
-            if active:
-                pen.setStyle(Qt.SolidLine)
             p.setPen(pen)
             for i in range(1, len(pts)):
                 p.drawLine(pts[i - 1], pts[i])
 
-        # Always draw structure
         draw_wire(to_box, live_wire if bus_live else idle_wire, 2.8 if bus_live else 2.0, bus_live)
         draw_wire(out_of_box, live_wire if bus_live else idle_wire, 2.8 if bus_live else 2.0, bus_live)
         draw_wire(psi_drop, charge_color if charging else idle_wire, 2.6 if charging else 2.0, charging)
         draw_wire(el_drop, discharge_color if discharging else idle_wire, 2.6 if discharging else 2.0, discharging)
 
-        # Junction dot
+        # Junction
+        j_r = 4.0 + (2.5 * self._flow_frac if bus_live else 0.0)
         p.setPen(Qt.NoPen)
+        if bus_live and self._flow_frac > 0:
+            jg = QColor(live_wire)
+            jg.setAlpha(int(60 + 80 * self._flow_frac))
+            p.setBrush(jg)
+            p.drawEllipse(bus_junction, j_r + 4, j_r + 4)
         p.setBrush(live_wire if bus_live else QColor("#8a96a3"))
-        p.drawEllipse(bus_junction, 4, 4)
+        p.drawEllipse(bus_junction, j_r, j_r)
 
-        # One continuous flow path → seamless particle loop
         flows: list[_FlowPath] = []
         if charging and main_pos and main_neg:
             flows.append(
@@ -225,14 +266,16 @@ class WiringSchematic(QWidget):
                     ],
                     QColor("#d4a017"),
                     True,
-                    speed=0.6,
+                    speed=0.45,
                 )
             )
 
         for flow in flows:
             self._draw_flow(p, flow)
 
-        # --- devices ---
+        amps = self._measured_amps()
+        crate = amps / self._capacity_ah if self._capacity_ah > 0 else 0.0
+
         self._draw_pack(
             p,
             pack_rect,
@@ -242,6 +285,7 @@ class WiringSchematic(QWidget):
             amps=bms.pack_current_a if bms else None,
             charging=charging,
             discharging=discharging,
+            flow_frac=self._flow_frac,
         )
         self._draw_control_box(
             p,
@@ -251,6 +295,7 @@ class WiringSchematic(QWidget):
             precharge=precharge,
             connected=connected_bms,
             state=bms.operating_state if bms and connected_bms else None,
+            pulse=self._glow_phase,
         )
         self._draw_device(
             p,
@@ -259,6 +304,7 @@ class WiringSchematic(QWidget):
             self._ea_detail(ea, source=True, active=charging, pack_i=pack_i),
             active=charging,
             accent=charge_color,
+            flow_frac=self._flow_frac if charging else 0.0,
         )
         self._draw_device(
             p,
@@ -267,13 +313,42 @@ class WiringSchematic(QWidget):
             self._ea_detail(ea, source=False, active=discharging, pack_i=pack_i),
             active=discharging,
             accent=discharge_color,
+            flow_frac=self._flow_frac if discharging else 0.0,
         )
 
-        # Caption
+        # Status chip + caption
         p.setFont(QFont("Segoe UI", 8))
+        caption = self._caption(
+            charging, discharging, main_pos, main_neg, precharge, connected_bms, amps, crate
+        )
         p.setPen(QColor(TEXT_DIM))
-        caption = self._caption(charging, discharging, main_pos, main_neg, precharge, connected_bms)
-        p.drawText(QRectF(8, h - 18, w - 16, 14), Qt.AlignLeft | Qt.AlignVCenter, caption)
+        p.drawText(QRectF(8, h - 20, w - 16, 16), Qt.AlignLeft | Qt.AlignVCenter, caption)
+
+    def _is_charging(self) -> bool:
+        ea = self._ea
+        bms = self._bms
+        pack_i = float(bms.pack_current_a) if bms and bms.pack_current_a is not None else 0.0
+        st = bms.contactors_effective if bms else None
+        main_ok = bool(st and st.main_pos and st.main_neg)
+        if ea and ea.connected and (ea.psi_output_on or abs(ea.psi_current_a) > 0.5):
+            return True
+        return bool(
+            bms
+            and bms.connected
+            and main_ok
+            and pack_i > 2.0
+            and not (ea and ea.connected and (ea.el_input_on or abs(ea.el_current_a) > 0.5))
+        )
+
+    def _is_discharging(self) -> bool:
+        ea = self._ea
+        bms = self._bms
+        pack_i = float(bms.pack_current_a) if bms and bms.pack_current_a is not None else 0.0
+        st = bms.contactors_effective if bms else None
+        main_ok = bool(st and st.main_pos and st.main_neg)
+        if ea and ea.connected and (ea.el_input_on or abs(ea.el_current_a) > 0.5):
+            return True
+        return bool(bms and bms.connected and main_ok and pack_i < -2.0)
 
     def _caption(
         self,
@@ -283,17 +358,20 @@ class WiringSchematic(QWidget):
         main_neg: bool,
         precharge: bool,
         connected: bool,
+        amps: float,
+        crate: float,
     ) -> str:
         if not connected:
             return "Zapojení: modul ↔ control box (Main+ / Main− / Precharge) ↔ zdroj + zátěž"
+        rate = f"  ·  {amps:.0f} A ({crate:.2f}C)" if amps > 0.5 else ""
         if charging:
-            return "Tok: zdroj → stykače → pack  (nabíjení)"
+            return f"Nabíjení — tok zdroj → stykače → pack{rate}"
         if discharging:
-            return "Tok: pack → stykače → zátěž  (vybíjení)"
+            return f"Vybíjení — tok pack → stykače → zátěž{rate}"
         if precharge and not main_pos:
             return "Precharge aktivní — Main+ ještě otevřený"
         if main_pos and main_neg:
-            return "Stykače CLOSED · EA idle"
+            return "Stykače CLOSED · EA idle (žádný tok)"
         return "Stykače OPEN · žádný výkonový tok"
 
     @staticmethod
@@ -314,7 +392,6 @@ class WiringSchematic(QWidget):
             if ea.el_input_on or abs(i) > 0.5 or active:
                 return f"{v:.1f} V · {abs(i):.0f} A"
             return f"{v:.1f} V · OFF"
-        # No EA sample (e.g. brief gap) — show inferred from pack current
         if active and source and pack_i > 2.0:
             return f"ON · ~{pack_i:.0f} A"
         if active and not source and pack_i < -2.0:
@@ -322,18 +399,33 @@ class WiringSchematic(QWidget):
         return "—"
 
     def _draw_flow(self, p: QPainter, flow: _FlowPath) -> None:
-        """Evenly spaced dots — constant alpha so wrap-around stays seamless."""
+        """Comet-style particles; speed already in shared _phase (scaled by C-rate)."""
         if not flow.active or len(flow.points) < 2:
             return
-        n = 6
-        c = QColor(flow.color)
-        c.setAlpha(175)
-        p.setPen(Qt.NoPen)
-        p.setBrush(c)
+        # Precharge without load: slow crawl even at flow_frac 0
+        frac = self._flow_frac
+        if frac <= 0 and flow.speed < 1.0:
+            # Static dashed hint for precharge path
+            frac = 0.12
+        if frac <= 0:
+            return
+
+        n = 4 + int(4 * frac)  # 4…8 particles
+        head = QColor(flow.color)
         for i in range(n):
             t = (self._phase * flow.speed + i / n) % 1.0
             pt = _point_on_path(flow.points, t)
-            p.drawEllipse(pt, 2.5, 2.5)
+            # Soft halo
+            halo = QColor(flow.color)
+            halo.setAlpha(int(40 + 50 * frac))
+            p.setPen(Qt.NoPen)
+            p.setBrush(halo)
+            p.drawEllipse(pt, 5.5 + 2.0 * frac, 5.5 + 2.0 * frac)
+            # Core
+            head.setAlpha(int(160 + 70 * frac))
+            p.setBrush(head)
+            r = 2.2 + 1.4 * frac
+            p.drawEllipse(pt, r, r)
 
     def _draw_device(
         self,
@@ -344,18 +436,20 @@ class WiringSchematic(QWidget):
         *,
         active: bool,
         accent: QColor,
+        flow_frac: float = 0.0,
     ) -> None:
         bg = QColor("#ffffff")
         border = accent if active else QColor(BORDER)
-        p.setPen(QPen(border, 1.6 if active else 1.2))
+        p.setPen(QPen(border, 1.8 if active else 1.2))
         p.setBrush(bg)
-        p.drawRoundedRect(rect, 6, 6)
+        p.drawRoundedRect(rect, 7, 7)
         if active:
+            pulse = 0.55 + 0.45 * (0.5 + 0.5 * math.sin(self._glow_phase * (1.0 + flow_frac)))
             glow = QColor(accent)
-            glow.setAlpha(28)
+            glow.setAlpha(int((22 + 40 * flow_frac) * pulse))
             p.setPen(Qt.NoPen)
             p.setBrush(glow)
-            p.drawRoundedRect(rect.adjusted(2, 2, -2, -2), 4, 4)
+            p.drawRoundedRect(rect.adjusted(2, 2, -2, -2), 5, 5)
 
         p.setPen(QColor(TEXT))
         p.setFont(QFont("Segoe UI", 9, QFont.DemiBold))
@@ -364,11 +458,13 @@ class WiringSchematic(QWidget):
         p.setFont(QFont("Segoe UI", 8))
         p.drawText(rect.adjusted(8, 18, -8, -2), Qt.AlignLeft | Qt.AlignTop, subtitle)
 
-        # Active LED
         led = QColor(accent) if active else QColor("#c5ced8")
+        if active and flow_frac > 0:
+            breath = 0.65 + 0.35 * (0.5 + 0.5 * math.sin(self._glow_phase * 2.2))
+            led.setAlpha(int(120 + 135 * breath))
         p.setPen(Qt.NoPen)
         p.setBrush(led)
-        p.drawEllipse(QPointF(rect.right() - 12, rect.top() + 12), 4, 4)
+        p.drawEllipse(QPointF(rect.right() - 12, rect.top() + 12), 4.5 if active else 3.5, 4.5 if active else 3.5)
 
     def _draw_control_box(
         self,
@@ -380,12 +476,25 @@ class WiringSchematic(QWidget):
         precharge: bool,
         connected: bool,
         state: BmuState | None,
+        pulse: float,
     ) -> None:
         p.setPen(QPen(QColor(BORDER), 1.3))
         p.setBrush(QColor("#ffffff"))
         p.drawRoundedRect(rect, 8, 8)
 
-        # Header
+        if connected and state == BmuState.READY and main_pos and main_neg:
+            ready_glow = QColor(OK)
+            ready_glow.setAlpha(int(18 + 14 * (0.5 + 0.5 * math.sin(pulse))))
+            p.setPen(Qt.NoPen)
+            p.setBrush(ready_glow)
+            p.drawRoundedRect(rect.adjusted(3, 3, -3, -3), 6, 6)
+        elif connected and state == BmuState.PRE_CHARGE:
+            pc = QColor("#d4a017")
+            pc.setAlpha(int(20 + 16 * (0.5 + 0.5 * math.sin(pulse * 1.4))))
+            p.setPen(Qt.NoPen)
+            p.setBrush(pc)
+            p.drawRoundedRect(rect.adjusted(3, 3, -3, -3), 6, 6)
+
         p.setPen(QColor(TEXT_DIM))
         p.setFont(QFont("Segoe UI", 8, QFont.DemiBold))
         header = "Control box · stykače"
@@ -393,15 +502,16 @@ class WiringSchematic(QWidget):
             header = f"Control box · BMU {state.name}"
         p.drawText(rect.adjusted(10, 6, -10, 0), Qt.AlignLeft | Qt.AlignTop, header)
 
-        # Contactors centered: Main+ · Main− · Precharge
         y = rect.center().y() + 4
         n = 3
         margin = 22.0
         usable = rect.width() - 2 * margin
         xs = [rect.left() + margin + usable * (i + 0.5) / n for i in range(n)]
-        self._draw_contactor(p, QPointF(xs[0], y), "Main+", main_pos, connected)
-        self._draw_contactor(p, QPointF(xs[1], y), "Main−", main_neg, connected)
-        self._draw_contactor(p, QPointF(xs[2], y), "Prech.", precharge, connected, warn=True)
+        self._draw_contactor(p, QPointF(xs[0], y), "Main+", main_pos, connected, pulse=pulse)
+        self._draw_contactor(p, QPointF(xs[1], y), "Main−", main_neg, connected, pulse=pulse)
+        self._draw_contactor(
+            p, QPointF(xs[2], y), "Prech.", precharge, connected, warn=True, pulse=pulse
+        )
 
     def _draw_contactor(
         self,
@@ -412,8 +522,8 @@ class WiringSchematic(QWidget):
         connected: bool,
         *,
         warn: bool = False,
+        pulse: float = 0.0,
     ) -> None:
-        # Switch symbol
         if not connected:
             color = QColor("#b0bac4")
         elif closed:
@@ -422,14 +532,19 @@ class WiringSchematic(QWidget):
             color = QColor("#c0392b") if not warn else QColor("#b0bac4")
 
         cx, cy = origin.x(), origin.y()
-        p.setPen(QPen(color, 2.0))
-        # poles
+        if connected and closed:
+            halo = QColor(color)
+            halo.setAlpha(int(50 + 40 * (0.5 + 0.5 * math.sin(pulse * 1.6))))
+            p.setPen(Qt.NoPen)
+            p.setBrush(halo)
+            p.drawEllipse(QPointF(cx, cy), 11, 11)
+
+        p.setPen(QPen(color, 2.1))
         p.drawLine(QPointF(cx, cy - 10), QPointF(cx, cy - 2))
         p.drawLine(QPointF(cx, cy + 10), QPointF(cx, cy + 2))
         if closed:
             p.drawLine(QPointF(cx, cy - 2), QPointF(cx, cy + 2))
         else:
-            # open blade
             p.drawLine(QPointF(cx, cy - 2), QPointF(cx + 9, cy + 4))
 
         p.setPen(QColor(TEXT if connected else TEXT_DIM))
@@ -451,13 +566,20 @@ class WiringSchematic(QWidget):
         amps: float | None,
         charging: bool,
         discharging: bool,
+        flow_frac: float,
     ) -> None:
         accent = QColor(OK) if charging else (QColor("#c47a3a") if discharging else QColor(ACCENT))
-        p.setPen(QPen(accent if (charging or discharging) else QColor(BORDER), 1.5))
+        p.setPen(QPen(accent if (charging or discharging) else QColor(BORDER), 1.6))
         p.setBrush(QColor("#ffffff"))
         p.drawRoundedRect(rect, 8, 8)
 
-        # Battery glyph
+        if (charging or discharging) and flow_frac > 0:
+            g = QColor(accent)
+            g.setAlpha(int(18 + 36 * flow_frac * (0.5 + 0.5 * math.sin(self._glow_phase))))
+            p.setPen(Qt.NoPen)
+            p.setBrush(g)
+            p.drawRoundedRect(rect.adjusted(2, 2, -2, -2), 6, 6)
+
         bx = rect.left() + 14
         by = rect.center().y() - 10
         p.setPen(QPen(accent, 1.4))
@@ -467,8 +589,11 @@ class WiringSchematic(QWidget):
         p.setPen(Qt.NoPen)
         p.drawRoundedRect(QRectF(bx + 22, by + 4, 3, 8), 1, 1)
         fill = 0.5 if soc is None else max(0.05, min(1.0, soc / 100.0))
+        # Gentle fill wave while power flows
+        if flow_frac > 0:
+            fill = max(0.05, min(1.0, fill + 0.04 * math.sin(self._glow_phase) * flow_frac))
         c = QColor(accent)
-        c.setAlpha(140)
+        c.setAlpha(150)
         p.setBrush(c)
         p.drawRoundedRect(QRectF(bx + 2, by + 2, 18 * fill, 12), 1, 1)
 

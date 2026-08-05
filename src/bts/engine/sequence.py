@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import csv
-import json
 import logging
 import threading
 import time
@@ -14,6 +13,12 @@ from typing import Any, Callable
 
 from bts.drivers.bms import BmsDriver, MockBmsDriver
 from bts.drivers.ea import EaRackDriver
+from bts.engine.report_builder import (
+    build_report_payload,
+    traces_from_csv_rows,
+    write_report_bundle,
+)
+from bts.models.current import format_amps_with_crate, resolve_amps
 from bts.models.program import ModuleProfile, Program, Step
 from bts.models.telemetry import BmuState, DesiredState, EaTelemetry, RunMeasurements
 
@@ -21,15 +26,28 @@ log = logging.getLogger(__name__)
 
 # Soft checks: EA/BMS values are not instant — confirm before failing the run.
 _SOFT_ABORT_CONFIRM_S = 3.0
+_SOFT_ABORT_CONFIRM_S_DTC = 1.0
+_BMU_CURRENT_MARGIN = 0.97  # keep small headroom below BMU command limits
+
+# Cell voltage safety margins (applied to profile limits).
+# Stop triggers first (bigger margin); abort is the hard safety net.
+_CELL_V_STOP_MARGIN  = 0.030  # V — stop step 30 mV inside profile limit
+_CELL_V_ABORT_MARGIN = 0.010  # V — hard abort 10 mV inside profile limit
 _CURRENT_GATE_WAIT_S = 8.0
 _CURRENT_GATE_OK_A = 0.5
+_I_MIN_HOLD_S = 5.0  # CV end-current must stay ≤ i_min_a this long
 
 # Never open contactors under load — wait for current to decay after EA off.
-# Deliberately slow so the operator can see EA off → I→0 → IDLE in Activity.
+# Timing is current-driven; fixed dwells are short (only to confirm I stays low).
 _CONTACTOR_OPEN_I_MAX_A = 1.5
-_CONTACTOR_OPEN_WAIT_S = 45.0
-_CONTACTOR_OPEN_MIN_DWELL_S = 8.0   # always wait this long after EA off (visible Stop)
-_CONTACTOR_OPEN_HOLD_S = 6.0        # after I≈0, hold before IDLE (visible pause)
+_CONTACTOR_OPEN_WAIT_S = 20.0       # ceiling while waiting for I→0
+_CONTACTOR_OPEN_MIN_DWELL_S = 1.5   # brief confirm after EA off before accepting I≈0
+_CONTACTOR_OPEN_HOLD_S = 1.5        # I must stay ≤ limit this long, then IDLE
+# UI join / quit must wait at least this long for safe_shutdown thread work.
+CONTACTOR_SAFE_JOIN_S = _CONTACTOR_OPEN_WAIT_S + _CONTACTOR_OPEN_HOLD_S + 10.0
+# After Main+/Main− close (READY): always dwell before charge/discharge/dcir.
+# Stepfiles must not rely on inserting wait_time after bms_ready.
+_CONTACTOR_SETTLE_S = 10.0
 
 
 class RunState(str, Enum):
@@ -112,6 +130,23 @@ class SequenceEngine:
         self._power_seen_ok = False
         # Last EA sample from the run thread (UI must not poll SCPI while RUNNING)
         self._last_ea: EaTelemetry | None = None
+        # Opt-in per-step recording (CSV + report charts)
+        self._record_step = False
+        # Per-step: whether we obey BMU current limits (live derate)
+        self._bmu_respect_active: bool = False
+        self._bmu_mode_active: str | None = None  # charge | discharge
+        # True when commanded I must stay for a valid result (capacity / DCIR).
+        # On BMU derate that would cut current → fail the run instead of continuing.
+        self._bmu_measure_critical: bool = False
+        self._bmu_last_derate_a: float | None = None
+        self._bmu_last_dtc_level: int | None = None
+        self._run_mono0: float | None = None
+        self._step_types: dict[str, str] = {}
+        self._step_results: dict[str, dict[str, Any]] = {}  # capacity/dcir per step_id
+        self._integrated_ah_step = 0.0
+        self._run_stamp: str = ""
+        self._csv_path: Path | None = None
+        self._last_sample_mono = 0.0
 
     def last_ea_telemetry(self) -> EaTelemetry | None:
         """Thread-safe copy of the latest EA sample taken by the sequence thread."""
@@ -272,8 +307,16 @@ class SequenceEngine:
             )
             self._csv_rows = []
             self._activity = []
+            self._record_step = False
+            self._run_mono0 = time.monotonic()
+            self._step_types = {}
+            self._step_results = {}
+            self._integrated_ah_step = 0.0
+            self._csv_path = None
+            self._last_sample_mono = 0.0
         self.runs_dir.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self._run_stamp = stamp
         self._activity_path = self.runs_dir / f"{stamp}_{self.program.meta.name}_activity.log"
         self._activity_path.write_text(
             f"# BTS activity log  {self._activity_path.name}\n"
@@ -343,17 +386,29 @@ class SequenceEngine:
             if dwell_ok and i_now <= i_max_a:
                 self._event(
                     f"{label}: I={i_now:.2f}A ≤ {i_max_a:.1f}A after {elapsed:.1f}s — "
-                    f"holding {_CONTACTOR_OPEN_HOLD_S:.0f}s before opening contactors"
+                    f"confirm {_CONTACTOR_OPEN_HOLD_S:.1f}s (I must stay low)"
                 )
                 hold_t0 = time.monotonic()
+                hold_ok = True
                 while time.monotonic() - hold_t0 < _CONTACTOR_OPEN_HOLD_S:
                     try:
                         self.ea.all_off()
                     except Exception:
                         pass
-                    time.sleep(0.25)
-                self._event(f"{label}: hold done — OK to open contactors")
-                return True
+                    i_hold = self._pack_and_ea_current_a()
+                    if i_hold > i_max_a:
+                        self._event(
+                            f"{label}: during confirm I rose to {i_hold:.2f}A — "
+                            "stykače NEOTEVÍRÁME, čekám dál"
+                        )
+                        hold_ok = False
+                        break
+                    time.sleep(0.2)
+                if hold_ok:
+                    self._event(f"{label}: I still ≤{i_max_a:.1f}A — OK to open contactors")
+                    return True
+                # I rose during hold — keep waiting in outer loop
+                continue
             if elapsed - last_log >= 0.5:
                 last_log = elapsed
                 phase = "min dwell" if not dwell_ok else "I decay"
@@ -454,6 +509,26 @@ class SequenceEngine:
             return f"Tmin {b.t_min_c:.1f} C < {abort['t_min_c']}"
         return None
 
+    def _effective_abort(self, step_abort: dict[str, Any] | None) -> dict[str, Any]:
+        """Merge program-level t_max_c and profile cell V hard limits."""
+        abort = dict(step_abort or {})
+        prog_tmax = getattr(self.program.meta, "t_max_c", None)
+        if prog_tmax is not None and "t_max_c" not in abort:
+            abort["t_max_c"] = float(prog_tmax)
+        # Hard safety net: cell voltage abort from profile (with tiny margin).
+        # User-defined values are respected if tighter; profile limit is the ceiling.
+        prof_cell_max = self.profile.cell_v_max - _CELL_V_ABORT_MARGIN
+        prof_cell_min = self.profile.cell_v_min + _CELL_V_ABORT_MARGIN
+        if "cell_v_max" not in abort:
+            abort["cell_v_max"] = prof_cell_max
+        else:
+            abort["cell_v_max"] = min(float(abort["cell_v_max"]), prof_cell_max)
+        if "cell_v_min" not in abort:
+            abort["cell_v_min"] = prof_cell_min
+        else:
+            abort["cell_v_min"] = max(float(abort["cell_v_min"]), prof_cell_min)
+        return abort
+
     def _check_abort_conditions(
         self,
         abort: dict[str, Any] | None,
@@ -474,15 +549,18 @@ class SequenceEngine:
             return
 
         now = time.monotonic()
+        confirm_s = _SOFT_ABORT_CONFIRM_S
+        if soft and str(soft).startswith("DTC level"):
+            confirm_s = _SOFT_ABORT_CONFIRM_S_DTC
         if self._soft_abort is None or self._soft_abort[0] != soft:
             self._soft_abort = (soft, now)
             self._event(
-                f"soft abort pending: {soft} — confirming {_SOFT_ABORT_CONFIRM_S:.0f}s "
+                f"soft abort pending: {soft} — confirming {confirm_s:.0f}s "
                 "(measurements not instant)"
             )
             return
         elapsed = now - self._soft_abort[1]
-        if elapsed >= _SOFT_ABORT_CONFIRM_S:
+        if elapsed >= confirm_s:
             self._reset_soft_abort()
             raise RuntimeError(f"Abort (confirmed {elapsed:.1f}s): {soft}")
 
@@ -508,7 +586,7 @@ class SequenceEngine:
             hard = self._voltage_abort_reason(abort, mode=mode)
             if hard:
                 self._trip_voltage(hard)
-            self._check_watchdog(require_ea=True)
+            self._check_watchdog(require_ea=True, mode=mode)
 
             et = self.ea.telemetry()
             if mode == "charge":
@@ -563,7 +641,7 @@ class SequenceEngine:
             self._sample_log()
             time.sleep(self.poll_period_s)
 
-    def _check_watchdog(self, *, require_ea: bool = True) -> None:
+    def _check_watchdog(self, *, require_ea: bool = True, mode: str | None = None) -> None:
         if not self.bms.is_healthy(self.can_timeout_s):
             detail = ""
             try:
@@ -576,6 +654,29 @@ class SequenceEngine:
                 + (detail or "check Kvaser / External CAN / App heartbeat")
             )
         tel = self.bms.telemetry()
+        # Operator-facing: react faster on BMU Derate before it reaches Disconnect.
+        if self._bmu_last_dtc_level is None or tel.dtc_level != self._bmu_last_dtc_level:
+            if tel.dtc_level in (1, 2, 3, 4):
+                msg = (
+                    f"BMU DTC level changed: L{tel.dtc_level} — "
+                    f"{tel.active_dtcs[0] if tel.active_dtcs else '—'}"
+                )
+                if tel.dtc_level in (2, 3):
+                    self._set_msg(msg)
+                else:
+                    self._event(msg)
+            self._bmu_last_dtc_level = tel.dtc_level
+        if (
+            require_ea
+            and tel.dtc_level == 2
+            and mode in ("charge", "discharge")
+            and self._bmu_respect_active
+        ):
+            try:
+                desired = abs(float(self.ea.commanded_current_a()))
+                self._maybe_live_bmu_derate_current(mode=mode, desired_a=desired)
+            except Exception:
+                log.exception("Live BMU derate handling failed")
         if tel.dtc_level >= self.abort_dtc_level:
             from bts.dtc_catalog import format_active_dtcs
 
@@ -672,8 +773,9 @@ class SequenceEngine:
             )
             return
 
-        # Classic MS slave loss: ~half current on combined MEAS (even from step start)
-        if self.ea_i_slave_ratio_lo <= ratio <= self.ea_i_slave_ratio_hi:
+        # Classic MS slave loss (~half combined MEAS) — EL pair only.
+        # Never apply on charge: CV taper / BMU derate legitimately sits in the 35–65% band.
+        if mode == "discharge" and self.ea_i_slave_ratio_lo <= ratio <= self.ea_i_slave_ratio_hi:
             pack_note = ""
             if pack_ratio is not None and self.ea_i_slave_ratio_lo <= pack_ratio <= self.ea_i_slave_ratio_hi:
                 pack_note = f", I_pack={pack_i:.1f}A (~1/2, BMU confirms)"
@@ -681,14 +783,15 @@ class SequenceEngine:
                 pack_note = f", I_pack={pack_i:.1f}A"
             self._confirm_ext_fail(
                 f"EXT FAIL - EL master/slave: current ~ half of setpoint "
-                f"(I_set={set_i:.0f}A, I_{path_label}={i_meas:.1f}A = {ratio*100:.0f}%"
+                f"(I_set={set_i:.0f}A, I_EL={i_meas:.1f}A = {ratio*100:.0f}%"
                 f"{pack_note}). "
                 f"One of two EL loads likely dropped (MS pair)."
             )
             return
 
-        # Total collapse only after we had healthy current
-        if self._power_seen_ok and ratio <= self.ea_i_collapse_ratio:
+        # Total collapse only after we had healthy current — discharge only.
+        # Charge CV taper / BMU derate looks the same as a collapse on PSI.
+        if self._power_seen_ok and mode == "discharge" and ratio <= self.ea_i_collapse_ratio:
             self._confirm_ext_fail(
                 f"EXT FAIL - {path_label}: current collapsed "
                 f"(I_set={set_i:.0f}A, I={i_meas:.1f}A = {ratio*100:.0f}%). "
@@ -748,12 +851,37 @@ class SequenceEngine:
             self._sample_log()
             time.sleep(self.poll_period_s)
 
+    def _should_record(self, params: dict[str, Any]) -> bool:
+        """CSV/trace only when step opts in — or when measuring capacity."""
+        if params.get("record") is False:
+            return False
+        if params.get("record") is True or params.get("record") in ("true", "1", 1, "yes"):
+            return True
+        return bool(params.get("measure"))
+
     def _sample_log(self) -> None:
+        if not self._record_step:
+            return
         b = self.bms.telemetry()
         e = self._cache_ea()
+        mono = time.monotonic()
+        t0 = self._run_mono0 if self._run_mono0 is not None else mono
+        t_s = mono - t0
+        psi_i = abs(float(e.psi_current_a or 0.0))
+        el_i = abs(float(e.el_current_a or 0.0))
+        if psi_i >= el_i and psi_i > 0.05:
+            ea_v, ea_i = e.psi_voltage_v, psi_i
+        elif el_i > 0.05:
+            ea_v, ea_i = e.el_voltage_v, el_i
+        else:
+            ea_v = e.psi_voltage_v or e.el_voltage_v or b.pack_voltage_v
+            ea_i = psi_i if psi_i >= el_i else el_i
+        with self._lock:
+            ah = self._status.measurements.extras.get("step_ah")
         self._csv_rows.append(
             {
                 "t": _utc_now(),
+                "t_s": round(t_s, 3),
                 "step": self._status.current_step_id,
                 "bms_state": int(b.operating_state),
                 "soc": b.soc_pct,
@@ -768,8 +896,12 @@ class SequenceEngine:
                 "psi_i": e.psi_current_a,
                 "el_v": e.el_voltage_v,
                 "el_i": e.el_current_a,
+                "ea_v": ea_v,
+                "ea_i": ea_i,
+                "ah": ah,
             }
         )
+        self._last_sample_mono = mono
 
     def _stop_reached(self, stop: dict[str, Any] | None, mode: str) -> bool:
         if not stop:
@@ -781,11 +913,14 @@ class SequenceEngine:
                 return True
             if mode == "discharge" and b.soc_pct <= float(stop["soc_pct"]):
                 return True
-        if "pack_v_max" in stop and b.pack_voltage_v is not None and b.pack_voltage_v >= float(stop["pack_v_max"]):
-            return True
+        # CV end-current (i_min_a): pack/cell Vmax only enter CV — do not end the step here.
+        cv_hold = mode == "charge" and "i_min_a" in stop
+        if not cv_hold:
+            if "pack_v_max" in stop and b.pack_voltage_v is not None and b.pack_voltage_v >= float(stop["pack_v_max"]):
+                return True
+            if "cell_v_max" in stop and cell_max is not None and cell_max >= float(stop["cell_v_max"]):
+                return True
         if "pack_v_min" in stop and b.pack_voltage_v is not None and b.pack_voltage_v <= float(stop["pack_v_min"]):
-            return True
-        if "cell_v_max" in stop and cell_max is not None and cell_max >= float(stop["cell_v_max"]):
             return True
         if "cell_v_min" in stop and cell_min is not None and cell_min <= float(stop["cell_v_min"]):
             return True
@@ -806,12 +941,14 @@ class SequenceEngine:
                 return f"soc {b.soc_pct:.1f}% >= {stop['soc_pct']}"
             if mode == "discharge" and b.soc_pct <= float(stop["soc_pct"]):
                 return f"soc {b.soc_pct:.1f}% <= {stop['soc_pct']}"
-        if "pack_v_max" in stop and b.pack_voltage_v is not None and b.pack_voltage_v >= float(stop["pack_v_max"]):
-            return f"pack Vmax {b.pack_voltage_v:.3f} >= {stop['pack_v_max']}"
+        cv_hold = mode == "charge" and "i_min_a" in stop
+        if not cv_hold:
+            if "pack_v_max" in stop and b.pack_voltage_v is not None and b.pack_voltage_v >= float(stop["pack_v_max"]):
+                return f"pack Vmax {b.pack_voltage_v:.3f} >= {stop['pack_v_max']}"
+            if "cell_v_max" in stop and cell_max is not None and cell_max >= float(stop["cell_v_max"]):
+                return f"cell Vmax {cell_max:.4f} >= {stop['cell_v_max']}"
         if "pack_v_min" in stop and b.pack_voltage_v is not None and b.pack_voltage_v <= float(stop["pack_v_min"]):
             return f"pack Vmin {b.pack_voltage_v:.3f} <= {stop['pack_v_min']}"
-        if "cell_v_max" in stop and cell_max is not None and cell_max >= float(stop["cell_v_max"]):
-            return f"cell Vmax {cell_max:.4f} >= {stop['cell_v_max']}"
         if "cell_v_min" in stop and cell_min is not None and cell_min <= float(stop["cell_v_min"]):
             return f"cell Vmin {cell_min:.4f} <= {stop['cell_v_min']}"
         if "ah_target" in stop and self._step_ah_start is not None:
@@ -837,10 +974,123 @@ class SequenceEngine:
         if b.operating_state != BmuState.READY:
             raise RuntimeError(f"BMS not READY (state={b.operating_state.name})")
 
+    def _want_respect_bmu_limits(self, params: dict[str, Any], *, mode: str) -> bool:
+        """Step flag respect_bmu_limits.
+
+        Default ON:
+        - discharge / charge (sníží risk BMU disconnect — zejména při SOC / derate)
+        U capacity/DCIR měření: limity stále respektujeme, ale pokud by BMU
+        snížila proud pod setpoint, run se ukončí (zkreslený výsledek).
+        Default OFF pouze když krok explicitně vypne `respect_bmu_limits`.
+        """
+        raw = params.get("respect_bmu_limits")
+        if raw is not None:
+            if isinstance(raw, str):
+                return raw.strip().lower() in ("1", "true", "yes", "on")
+            return bool(raw)
+        return mode in ("charge", "discharge")
+
+    @staticmethod
+    def _is_measure_current_critical(params: dict[str, Any], step_type: str) -> bool:
+        """Capacity / DCIR results depend on keeping the commanded C-rate / pulse I."""
+        if step_type == "dcir":
+            return True
+        meas = params.get("measure")
+        if not meas:
+            return False
+        return True
+
+    def _cap_current_to_bmu(self, current_a: float, params: dict[str, Any], *, mode: str) -> float:
+        if not self._want_respect_bmu_limits(params, mode=mode):
+            return current_a
+        b = self.bms.telemetry()
+        lim: float | None = None
+        if mode == "charge" and b.charge_current_limit_a is not None:
+            lim = float(b.charge_current_limit_a)
+        elif mode == "discharge" and b.discharge_current_limit_a is not None:
+            lim = float(b.discharge_current_limit_a)
+        if lim is None or lim <= 0:
+            return current_a
+        safe_lim = lim * _BMU_CURRENT_MARGIN
+        if current_a > safe_lim + 0.05:
+            if self._bmu_measure_critical:
+                raise RuntimeError(
+                    f"BMU current limit would change measurement current "
+                    f"({mode} {current_a:.1f}A → {safe_lim:.1f}A, BMU {lim:.1f}A) — "
+                    "aborting instead of running at reduced C-rate / pulse"
+                )
+            self._event(
+                f"respect_bmu_limits: {mode} I {current_a:.1f}A → {safe_lim:.1f}A "
+                f"(BMU limit {lim:.1f}A × headroom {_BMU_CURRENT_MARGIN:.2f})"
+            )
+            return safe_lim
+        return current_a
+
+    def _maybe_live_bmu_derate_current(self, *, mode: str, desired_a: float) -> None:
+        """On BMU DTC level 2 (Derate) reduce EA current — or abort if it would spoil a measure.
+
+        Non-measure steps: lower current to stay under BMU limit and continue
+        (avoid path to DTC=3 disconnect / contactors).
+
+        Capacity / DCIR: commanded I is part of the result → stop the run instead.
+        """
+        if not self._bmu_respect_active:
+            return
+        if self._bmu_mode_active != mode:
+            return
+        b = self.bms.telemetry()
+        lim_a = (
+            float(b.charge_current_limit_a)
+            if mode == "charge"
+            else float(b.discharge_current_limit_a)
+        ) if (mode in ("charge", "discharge")) else None
+        if lim_a is None or lim_a <= 0:
+            return
+        safe_lim_a = lim_a * _BMU_CURRENT_MARGIN
+        if desired_a <= safe_lim_a + 0.05:
+            return
+        if self._bmu_last_derate_a is not None and abs(self._bmu_last_derate_a - safe_lim_a) < 1.0:
+            return
+        if self._bmu_measure_critical:
+            raise RuntimeError(
+                f"BMU DTC derate during measurement: commanded {desired_a:.1f}A would drop to "
+                f"{safe_lim_a:.1f}A (BMU {lim_a:.1f}A) — aborting to keep result valid"
+            )
+        self._bmu_last_derate_a = safe_lim_a
+        self._event(
+            f"BMU DTC derate: lowering EA current {desired_a:.1f}A → {safe_lim_a:.1f}A "
+            f"(BMU {lim_a:.1f}A × {_BMU_CURRENT_MARGIN:.2f})"
+        )
+        self._set_msg(f"BMU derate — current reduced to {safe_lim_a:.0f}A")
+        try:
+            if mode == "charge" and hasattr(self.ea, "psi"):
+                self.ea.psi.set_current(safe_lim_a)
+            elif mode == "discharge" and hasattr(self.ea, "el"):
+                self.ea.el.set_current(safe_lim_a)
+        except Exception:
+            # If live set_current fails, next watchdog/abort will still stop EA safely.
+            log.exception("Live BMU derate set_current failed")
+
     def _run_step(self, step: Step) -> None:
         t = step.type
         p = step.params
         self._set_msg(f"Step {step.id}: {t}")
+        # Reset per-step BMU limit tracking.
+        self._bmu_respect_active = False
+        self._bmu_mode_active = None
+        self._bmu_last_derate_a = None
+        self._bmu_measure_critical = self._is_measure_current_critical(p, t)
+        self._step_types[step.id] = t
+        self._record_step = self._should_record(p) if t in (
+            "charge",
+            "discharge",
+            "dcir",
+            "goto_soc",
+            "wait_time",
+            "wait_temp",
+        ) else False
+        if self._record_step:
+            self._event(f"{step.id}: recording CSV/trace")
 
         if t == "bms_ready":
             timeout = float(p.get("timeout_s", 60))
@@ -873,6 +1123,22 @@ class SequenceEngine:
                 on_poll=_progress,
             )
             self._event(self._snapshot_bms("READY ok"))
+            settle_s = float(p.get("settle_s", _CONTACTOR_SETTLE_S))
+            if settle_s > 0:
+                self._event(
+                    f"bms_ready: stykače READY — odstup {settle_s:.0f}s před dalším krokem"
+                )
+                self._set_msg(f"Po stykačích: čekám {settle_s:.0f}s…")
+                t0 = time.monotonic()
+                while time.monotonic() - t0 < settle_s:
+                    if self._abort.is_set():
+                        raise RuntimeError("Aborted")
+                    self._check_watchdog(require_ea=False)
+                    self._sample_log()
+                    left = settle_s - (time.monotonic() - t0)
+                    self._set_msg(f"Po stykačích: čekám {max(0.0, left):.0f}s…")
+                    time.sleep(self.poll_period_s)
+                self._event("bms_ready: settle done — pokračuji")
 
         elif t == "bms_idle":
             timeout = float(p.get("timeout_s", 30))
@@ -898,25 +1164,82 @@ class SequenceEngine:
             )
             self._event(self._snapshot_bms("IDLE ok"))
 
+        elif t == "goto_soc":
+            # Charge or discharge to target SOC from unknown starting SOC
+            target = float(p.get("soc_pct", p.get("stop", {}).get("soc_pct", 50)))
+            band = float(p.get("band_pct", 0.5))
+            soc = self.bms.telemetry().soc_pct
+            if soc is None:
+                raise RuntimeError("goto_soc: BMS SOC not available")
+            if abs(float(soc) - target) <= band:
+                self._event(f"goto_soc: already at {soc:.1f}% (target {target:.0f}% ±{band})")
+            else:
+                sub_p = dict(p)
+                sub_p.pop("soc_pct", None)
+                sub_p.pop("band_pct", None)
+                if self._should_record(p):
+                    sub_p["record"] = True
+                stop = dict(sub_p.get("stop") or {})
+                stop["soc_pct"] = target
+                sub_p["stop"] = stop
+                if float(soc) < target:
+                    sub_p.setdefault("voltage_v", self.profile.pack_v_max)
+                    self._event(
+                        f"goto_soc: SOC {soc:.1f}% < {target:.0f}% → charge"
+                    )
+                    self._run_step(Step(id=f"{step.id}_chg", type="charge", params=sub_p))
+                else:
+                    self._event(
+                        f"goto_soc: SOC {soc:.1f}% > {target:.0f}% → discharge"
+                    )
+                    self._run_step(Step(id=f"{step.id}_dch", type="discharge", params=sub_p))
+
         elif t == "charge":
             self._require_ready()
             self._reset_soft_abort()
-            current = float(p.get("current_a", self.profile.default_test_current_a))
+            current = resolve_amps(
+                p,
+                self.profile,
+                amp_key="current_a",
+                default=self.profile.default_test_current_a,
+            )
+            self._bmu_respect_active = self._want_respect_bmu_limits(p, mode="charge")
+            self._bmu_mode_active = "charge"
+            current = self._cap_current_to_bmu(current, p, mode="charge")
             voltage = float(p.get("voltage_v", self.profile.pack_v_max))
+            if voltage > self.profile.pack_v_max:
+                self._event(
+                    f"charge: clamping voltage_v {voltage:.2f}V → profile pack_v_max "
+                    f"{self.profile.pack_v_max:.2f}V"
+                )
+                voltage = self.profile.pack_v_max
             stop = dict(p.get("stop") or {})
-            abort = p.get("abort") or {}
-            # Fill missing pack stop from temperature-aware profile cutoffs
+            abort = self._effective_abort(p.get("abort"))
+            # Fill missing pack stop from temperature-aware profile cutoffs.
+            # With i_min_a (CV), pack_v_max is informational for logs / near-V — step ends on i_min.
             t_now = self.bms.telemetry().t_max_c
             if "pack_v_max" not in stop:
                 stop["pack_v_max"] = self.profile.charge_pack_vmax(t_now)
                 self._event(
                     f"charge: stop.pack_v_max from profile cutoff = {stop['pack_v_max']:.2f}V "
                     f"(Tmax={t_now if t_now is not None else '—'}°C)"
+                    + (" — CV via i_min_a, Vmax alone does not end step" if "i_min_a" in stop else "")
+                )
+            # Cell voltage stop — safety net from profile, stops before BMU disconnect.
+            if "cell_v_max" not in stop:
+                stop["cell_v_max"] = self.profile.cell_v_max - _CELL_V_STOP_MARGIN
+                self._event(
+                    f"charge: auto cell_v_max stop = {stop['cell_v_max']:.3f}V "
+                    f"(profile {self.profile.cell_v_max:.3f}V − {_CELL_V_STOP_MARGIN*1000:.0f}mV margin)"
                 )
             timeout = float(stop.get("timeout_s", p.get("timeout_s", 8 * 3600)))
             self._mark_ah_start()
             integrated_ah = 0.0
-            self._event(f"charge: start PSI V={voltage:.2f} I={current:.1f} (EL off)")
+            i_min_since: float | None = None
+            self._event(
+                f"charge: start PSI V={voltage:.2f} I={format_amps_with_crate(current, self.profile)} "
+                f"(EL off)"
+            )
             self._event("charge: setpoints first, then PSI OUTP OFF→ON")
             self._power_seen_ok = False
             self._reset_ext_fail()
@@ -938,7 +1261,7 @@ class SequenceEngine:
             while True:
                 if self._abort.is_set():
                     raise RuntimeError("Aborted")
-                self._check_watchdog(require_ea=True)
+                self._check_watchdog(require_ea=True, mode="charge")
                 now = time.monotonic()
                 et = self._cache_ea()
                 integrated_ah += abs(et.psi_current_a) * (now - last) / 3600.0
@@ -955,6 +1278,27 @@ class SequenceEngine:
                     self.ea.all_off()
                     self._cache_ea()
                     break
+                # CV end-current cutoff (i_min_a): hold ≤ limit for _I_MIN_HOLD_S
+                if "i_min_a" in stop:
+                    i_now = abs(et.psi_current_a)
+                    near_v = et.psi_voltage_v >= (voltage - 0.15)
+                    if near_v and i_now <= float(stop["i_min_a"]):
+                        if i_min_since is None:
+                            i_min_since = now
+                            self._event(
+                                f"charge: I={i_now:.2f}A ≤ i_min {stop['i_min_a']}A — "
+                                f"holding {_I_MIN_HOLD_S:.0f}s for CV cutoff"
+                            )
+                        elif now - i_min_since >= _I_MIN_HOLD_S:
+                            self._event(
+                                f"charge: stop i_min_a — I={i_now:.2f}A ≤ {stop['i_min_a']}A "
+                                f"for {_I_MIN_HOLD_S:.0f}s (CV done)"
+                            )
+                            self.ea.all_off()
+                            self._cache_ea()
+                            break
+                    else:
+                        i_min_since = None
                 self._check_abort_conditions(abort, mode="charge")
                 if time.monotonic() - t0 > timeout:
                     raise TimeoutError("Charge timeout")
@@ -967,9 +1311,17 @@ class SequenceEngine:
         elif t == "discharge":
             self._require_ready()
             self._reset_soft_abort()
-            current = float(p.get("current_a", self.profile.default_test_current_a))
+            current = resolve_amps(
+                p,
+                self.profile,
+                amp_key="current_a",
+                default=self.profile.default_test_current_a,
+            )
+            self._bmu_respect_active = self._want_respect_bmu_limits(p, mode="discharge")
+            self._bmu_mode_active = "discharge"
+            current = self._cap_current_to_bmu(current, p, mode="discharge")
             stop = dict(p.get("stop") or {})
-            abort = p.get("abort") or {}
+            abort = self._effective_abort(p.get("abort"))
             timeout = float(stop.get("timeout_s", p.get("timeout_s", 8 * 3600)))
             t_now = self.bms.telemetry().t_max_c
             if "pack_v_min" not in stop:
@@ -978,13 +1330,20 @@ class SequenceEngine:
                     f"discharge: stop.pack_v_min from profile cutoff = {stop['pack_v_min']:.2f}V "
                     f"(Tmax={t_now if t_now is not None else '—'}°C)"
                 )
+            if "cell_v_min" not in stop:
+                stop["cell_v_min"] = self.profile.cell_v_min + _CELL_V_STOP_MARGIN
+                self._event(
+                    f"discharge: auto cell_v_min stop = {stop['cell_v_min']:.3f}V "
+                    f"(profile {self.profile.cell_v_min:.3f}V + {_CELL_V_STOP_MARGIN*1000:.0f}mV margin)"
+                )
             vlim = float(stop.get("pack_v_min", self.profile.pack_v_min))
             pack_v = self.bms.telemetry().pack_voltage_v
             op_v = float(pack_v) if pack_v and pack_v > 0 else float(self.profile.pack_v_max)
             self._mark_ah_start()
-            ah0_dis = self.bms.telemetry().ah_discharge or 0.0
             integrated_ah = 0.0
-            self._event(f"discharge: start EL I={current:.1f} (PSI off)")
+            self._event(
+                f"discharge: start EL I={format_amps_with_crate(current, self.profile)} (PSI off)"
+            )
             self._event(
                 f"discharge: setpoints first, then EL INP OFF→ON "
                 f"(POW from Uop≈{op_v:.2f}V, UV={vlim:.2f}V)"
@@ -1004,7 +1363,7 @@ class SequenceEngine:
             while True:
                 if self._abort.is_set():
                     raise RuntimeError("Aborted")
-                self._check_watchdog(require_ea=True)
+                self._check_watchdog(require_ea=True, mode="discharge")
                 now = time.monotonic()
                 et = self._cache_ea()
                 integrated_ah += abs(et.el_current_a) * (now - last) / 3600.0
@@ -1028,12 +1387,24 @@ class SequenceEngine:
             self.ea.all_off()
             if isinstance(self.bms, MockBmsDriver):
                 self.bms.set_external_current(0.0)
-            bms_delta = (self.bms.telemetry().ah_discharge or 0.0) - ah0_dis
-            capacity = integrated_ah if integrated_ah > 0.01 else bms_delta
-            if p.get("measure") == "capacity_ah":
+            # Capacity from EA (EL) coulomb count — BMU Ah is not always accurate.
+            capacity = integrated_ah
+            meas = p.get("measure")
+            if meas:
+                if capacity < 0.01:
+                    raise RuntimeError(
+                        f"capacity measure: EA integrated Ah≈{capacity:.4f} — check EL current"
+                    )
+                key = str(meas).strip() or "capacity_ah"
                 with self._lock:
-                    self._status.measurements.capacity_ah = capacity
-                self._set_msg(f"Measured capacity: {capacity:.3f} Ah")
+                    if key == "capacity_ah":
+                        self._status.measurements.capacity_ah = capacity
+                    self._status.measurements.extras[key] = capacity
+                self._step_results[step.id] = {
+                    "capacity_ah": capacity,
+                    "capacity_key": key,
+                }
+                self._set_msg(f"Measured {key}: {capacity:.3f} Ah (EA/EL)")
 
         elif t == "wait_temp":
             t_max = float(p["t_max_c"]) if "t_max_c" in p else None
@@ -1062,8 +1433,17 @@ class SequenceEngine:
 
         elif t == "dcir":
             self._require_ready()
-            pulse_a = float(p.get("pulse_a", self.profile.dcir_pulse_a))
+            pulse_a = resolve_amps(
+                p,
+                self.profile,
+                amp_key="pulse_a",
+                default=self.profile.dcir_pulse_a,
+            )
+            self._bmu_respect_active = self._want_respect_bmu_limits(p, mode="discharge")
+            self._bmu_mode_active = "discharge"
+            pulse_a = self._cap_current_to_bmu(pulse_a, p, mode="discharge")
             pulse_s = float(p.get("pulse_s", self.profile.dcir_pulse_s))
+            abort = self._effective_abort(p.get("abort"))
             soc_ref = p.get("soc_ref_pct")
             if soc_ref is not None:
                 target = float(soc_ref)
@@ -1077,6 +1457,7 @@ class SequenceEngine:
                     if self._abort.is_set():
                         raise RuntimeError("Aborted")
                     self._check_watchdog(require_ea=False)
+                    self._check_abort_conditions(abort, mode=None)
                     b = self.bms.telemetry()
                     soc = b.soc_pct
                     if soc is not None and abs(soc - target) <= band:
@@ -1090,12 +1471,16 @@ class SequenceEngine:
                         )
                         break
                     time.sleep(self.poll_period_s)
-            # Rest voltage
+            # Rest voltage from EA (EL sense), fallback BMS pack
             self.ea.all_off()
             time.sleep(1.0)
-            v0 = self.bms.telemetry().pack_voltage_v or self.ea.telemetry().el_voltage_v
+            e_rest = self._cache_ea()
+            v0 = e_rest.el_voltage_v or self.bms.telemetry().pack_voltage_v
             self._power_seen_ok = False
             self._reset_ext_fail()
+            self._event(
+                f"dcir: pulse {format_amps_with_crate(pulse_a, self.profile)} × {pulse_s:.1f}s"
+            )
             self.ea.start_discharge(
                 pulse_a,
                 voltage_limit_v=self.profile.pack_v_min,
@@ -1108,49 +1493,40 @@ class SequenceEngine:
                 if self._abort.is_set():
                     self.ea.all_off()
                     raise RuntimeError("Aborted")
-                self._check_watchdog(require_ea=True)
+                self._check_watchdog(require_ea=True, mode="discharge")
                 self._sample_log()
                 time.sleep(min(self.poll_period_s, 0.2))
             b = self.bms.telemetry()
             e = self._cache_ea()
-            v1 = b.pack_voltage_v if b.pack_voltage_v is not None else e.el_voltage_v
-            i = e.el_current_a if e.el_current_a > 1 else pulse_a
+            # dV + I from EA (EL); BMU pack V/I is not always accurate enough for R.
+            v1 = float(e.el_voltage_v or 0.0)
+            if v1 <= 0 and b.pack_voltage_v is not None:
+                v1 = float(b.pack_voltage_v)
+            i = abs(float(e.el_current_a))
             self.ea.all_off()
             if isinstance(self.bms, MockBmsDriver):
                 self.bms.set_external_current(0.0)
-            if i <= 0:
-                raise RuntimeError("DCIR: zero current")
-            dcir_mohm = abs((v0 or 0) - (v1 or 0)) / i * 1000.0
+            min_i = max(1.0, 0.2 * abs(pulse_a))
+            if i < min_i:
+                raise RuntimeError(
+                    f"DCIR: measured EL I={i:.2f}A too low (need ≥{min_i:.1f}A for "
+                    f"set {pulse_a:.0f}A) — refusing setpoint-based fake R"
+                )
+            dV = abs(float(v0 or 0) - v1)
+            dcir_mohm = dV / i * 1000.0
             with self._lock:
                 self._status.measurements.dcir_mohm = dcir_mohm
                 if soc_ref is not None:
                     self._status.measurements.extras["dcir_soc_ref_pct"] = float(soc_ref)
-            self._set_msg(f"DCIR: {dcir_mohm:.3f} mOhm (dV={(v0 or 0)-(v1 or 0):.4f} V @ {i:.1f} A)")
+            self._step_results[step.id] = {"dcir_mohm": dcir_mohm}
+            self._set_msg(
+                f"DCIR: {dcir_mohm:.3f} mOhm (dV={dV:.4f} V @ EL {i:.1f} A)"
+            )
 
         elif t == "report":
             include = list(p.get("include") or [])
             b = self.bms.telemetry()
-            report = {
-                "program": self.program.meta.name,
-                "profile": self.profile.id,
-                "serial": self.serial_number,
-                "started_at": self._status.started_at,
-                "finished_at": _utc_now(),
-                "capacity_ah": self._status.measurements.capacity_ah,
-                "dcir_mohm": self._status.measurements.dcir_mohm,
-            }
-            if "cells" in include:
-                report["cell_voltages"] = b.cell_voltages
-                report["cell_v_min"] = b.cell_v_min
-                report["cell_v_max"] = b.cell_v_max
-            if "temps" in include:
-                report["temperatures_c"] = b.temperatures_c
-                report["t_min_c"] = b.t_min_c
-                report["t_max_c"] = b.t_max_c
-            if "dtc" in include:
-                report["dtc_level"] = b.dtc_level
-                report["active_dtcs"] = b.active_dtcs
-            path = self._write_report(report)
+            path = self._write_report(include=include, telemetry=b)
             with self._lock:
                 self._status.report_path = str(path)
             self._set_msg(f"Report written: {path}")
@@ -1161,40 +1537,73 @@ class SequenceEngine:
         else:
             raise ValueError(f"Unknown step type: {t}")
 
-    def _write_report(self, report: dict[str, Any]) -> Path:
+    def _write_report(self, *, include: list[str], telemetry: Any) -> Path:
+        """Classic capacity/DCIR report: results cards + V/I charts from recorded steps."""
         self.runs_dir.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        base = self.runs_dir / f"{stamp}_{self.program.meta.name}"
-        json_path = Path(str(base) + ".json")
-        html_path = Path(str(base) + ".html")
-        json_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
-        html = [
-            "<!DOCTYPE html><html><head><meta charset='utf-8'><title>BTS Report</title>",
-            "<style>body{font-family:Segoe UI,sans-serif;margin:2rem;} table{border-collapse:collapse;}",
-            "td,th{border:1px solid #ccc;padding:6px 10px;}</style></head><body>",
-            f"<h1>{report.get('program')}</h1>",
-            f"<p>Profile: {report.get('profile')} | Serial: {report.get('serial') or '—'}</p>",
-            "<table>",
-        ]
-        for k in ("capacity_ah", "dcir_mohm", "started_at", "finished_at", "cell_v_min", "cell_v_max", "t_min_c", "t_max_c", "dtc_level"):
-            if k in report and report[k] is not None:
-                html.append(f"<tr><th>{k}</th><td>{report[k]}</td></tr>")
-        html.append("</table></body></html>")
-        html_path.write_text("\n".join(html), encoding="utf-8")
+        stamp = self._run_stamp or datetime.now().strftime("%Y%m%d_%H%M%S")
+        base_name = f"{stamp}_{self.program.meta.name}"
+
+        csv_name: str | None = None
+        if self._csv_rows:
+            csv_path = self._write_csv()
+            csv_name = csv_path.name
+
+        traces = traces_from_csv_rows(self._csv_rows, self._step_types)
+        for tr in traces:
+            res = self._step_results.get(tr.step_id) or {}
+            if res.get("capacity_ah") is not None:
+                tr.capacity_ah = float(res["capacity_ah"])
+                tr.capacity_key = str(res.get("capacity_key") or "capacity_ah")
+            if res.get("dcir_mohm") is not None:
+                tr.dcir_mohm = float(res["dcir_mohm"])
+
+        with self._lock:
+            meas = self._status.measurements
+            extras = dict(meas.extras)
+            capacity_ah = meas.capacity_ah
+            dcir_mohm = meas.dcir_mohm
+            started = self._status.started_at
+            activity = self._status.activity_path
+
+        cells = list(telemetry.cell_voltages) if "cells" in include else None
+        temps = list(telemetry.temperatures_c) if "temps" in include else None
+        dtc_level = int(telemetry.dtc_level) if "dtc" in include else None
+        active_dtcs = list(telemetry.active_dtcs) if "dtc" in include else None
+
+        payload = build_report_payload(
+            program=self.program.meta.name,
+            profile=self.profile.id,
+            serial=self.serial_number or "",
+            started_at=started,
+            finished_at=_utc_now(),
+            measurements={"capacity_ah": capacity_ah, "dcir_mohm": dcir_mohm},
+            extras=extras,
+            include=include,
+            traces=traces,
+            csv_name=csv_name,
+            activity_name=Path(activity).name if activity else None,
+            cells=cells,
+            temps=temps,
+            dtc_level=dtc_level,
+            active_dtcs=active_dtcs,
+        )
+        html_path, _json_path = write_report_bundle(self.runs_dir, base_name, payload)
         return html_path
 
     def _write_csv(self) -> Path:
         self.runs_dir.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        stamp = self._run_stamp or datetime.now().strftime("%Y%m%d_%H%M%S")
         path = self.runs_dir / f"{stamp}_{self.program.meta.name}.csv"
         if not self._csv_rows:
-            path.write_text("t,step\n", encoding="utf-8")
+            path.write_text("t,t_s,step\n", encoding="utf-8")
+            self._csv_path = path
             return path
         fields = list(self._csv_rows[0].keys())
         with path.open("w", newline="", encoding="utf-8") as f:
             w = csv.DictWriter(f, fieldnames=fields)
             w.writeheader()
             w.writerows(self._csv_rows)
+        self._csv_path = path
         return path
 
     def _run(self) -> None:
@@ -1214,10 +1623,31 @@ class SequenceEngine:
                 self._event(f"=== step {idx + 1}/{len(self.program.steps)} id={step.id} type={step.type} ===")
                 self._run_step(step)
                 self._event(f"step {step.id} completed")
-            csv_path = self._write_csv()
-            self._event(f"All steps completed — csv={csv_path.name}")
+            csv_path: Path | None = None
+            if self._csv_rows:
+                csv_path = self._write_csv()
+                self._event(
+                    f"All steps completed — csv={csv_path.name} "
+                    f"({len(self._csv_rows)} samples from recorded steps)"
+                )
+            else:
+                self._event(
+                    "All steps completed — no CSV "
+                    "(zapni „Zaznamenat stopu“ / measure u vybraných kroků)"
+                )
+            # Always leave the bench safe: if still READY, open contactors.
+            try:
+                st = self.bms.telemetry().operating_state
+                if st in (BmuState.READY, BmuState.PRE_CHARGE):
+                    self._event(
+                        f"post-run: BMS still {st.name} — safe_shutdown (open contactors)"
+                    )
+                    self._safe_shutdown(open_contactors=True)
+            except Exception:
+                log.exception("post-run safe_shutdown failed")
             with self._lock:
-                self._status.log_path = str(csv_path)
+                if csv_path is not None:
+                    self._status.log_path = str(csv_path)
                 self._status.run_state = RunState.COMPLETED
                 self._status.finished_at = _utc_now()
                 self._status.message = "All steps completed"

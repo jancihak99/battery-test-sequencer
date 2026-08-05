@@ -13,7 +13,7 @@ if not exist ".venv\Scripts\python.exe" (
   ".venv\Scripts\python.exe" -m pip install -r requirements.txt
 )
 
-REM Launch GUI without a console window (pythonw), then close this launcher.
+REM Launch GUI without a console (pythonw). Crashes show a Qt dialog (see main.py).
 if exist ".venv\Scripts\pythonw.exe" (
   start "" ".venv\Scripts\pythonw.exe" "%~dp0main.py"
   exit /b 0

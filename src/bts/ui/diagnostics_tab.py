@@ -52,7 +52,7 @@ class _ScanWorker(QThread):
                 bms_interface=self.cfg.bms.interface,
                 bms_channel=int(self.cfg.bms.channel),
                 bms_bitrate=int(self.cfg.bms.bitrate),
-                mock=bool(self.cfg.use_mock_hardware),
+                mock=False,
             )
             self.finished_ok.emit(report)
         except Exception as exc:

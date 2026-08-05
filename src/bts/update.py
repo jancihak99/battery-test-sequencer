@@ -223,12 +223,14 @@ def check_for_update(root: Path) -> UpdateCheckResult:
 
 
 def _preserve_paths(root: Path) -> list[tuple[Path, Path]]:
-    """Copy lab-local files aside before overwrite."""
-    keep = [
-        root / "config" / "default.yaml",
-        root / TOKEN_FILENAME,
-        root / "config" / "update.yaml",
-    ]
+    """Copy lab-local files aside before overwrite (entire config/ + token)."""
+    keep: list[Path] = []
+    cfg_dir = root / "config"
+    if cfg_dir.is_dir():
+        keep.extend(sorted(p for p in cfg_dir.rglob("*") if p.is_file()))
+    token = root / TOKEN_FILENAME
+    if token.exists():
+        keep.append(token)
     tmp = Path(tempfile.mkdtemp(prefix="bts_keep_"))
     saved: list[tuple[Path, Path]] = []
     for src in keep:

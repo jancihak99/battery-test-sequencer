@@ -6,6 +6,7 @@ import random
 from dataclasses import dataclass, field
 from typing import Literal
 
+from bts.models.current import resolve_amps
 from bts.models.program import ModuleProfile, Program, Step
 
 PhaseKind = Literal["idle", "charge", "discharge", "wait", "pulse", "done"]
@@ -198,8 +199,11 @@ class StepfileSimulator:
         if t in ("bms_ready", "bms_idle"):
             self.state.current_a = 0.0
             self.state.voltage_v = self._ocv(self.state.soc_pct)
-            # Short handshake preview
-            return elapsed >= min(8.0, float(p.get("timeout_s", 30)) * 0.15)
+            # Short handshake preview (+ settle after READY / contactors)
+            hand = min(8.0, float(p.get("timeout_s", 30)) * 0.15)
+            if t == "bms_ready":
+                hand += float(p.get("settle_s", 10.0))
+            return elapsed >= hand
 
         if t == "wait_time":
             self.state.current_a = 0.0
@@ -223,7 +227,17 @@ class StepfileSimulator:
             return ok or elapsed >= timeout
 
         if t == "dcir":
-            pulse_a = float(p.get("pulse_a", self.profile.dcir_pulse_a))
+            try:
+                pulse_a = abs(
+                    resolve_amps(
+                        p,
+                        self.profile,
+                        amp_key="pulse_a",
+                        default=self.profile.dcir_pulse_a,
+                    )
+                )
+            except Exception:
+                pulse_a = abs(float(p.get("pulse_a", self.profile.dcir_pulse_a)))
             if self._pulse_left > 0:
                 use = min(dt, self._pulse_left)
                 self.state.current_a = -abs(pulse_a)
@@ -250,8 +264,18 @@ class StepfileSimulator:
     def _power_step(self, step: Step, dt: float, elapsed: float, *, mode: str) -> bool:
         p = step.params or {}
         stop = p.get("stop") or {}
-        current = float(p.get("current_a", self.profile.default_test_current_a))
-        current = abs(current)
+        try:
+            current = abs(
+                resolve_amps(
+                    p,
+                    self.profile,
+                    amp_key="current_a",
+                    default=self.profile.default_test_current_a,
+                )
+            )
+        except Exception:
+            current = abs(float(p.get("current_a", self.profile.default_test_current_a)))
+        current = max(0.1, current)
         timeout = float(stop.get("timeout_s", p.get("timeout_s", 8 * 3600)))
 
         if mode == "charge":
@@ -279,12 +303,16 @@ class StepfileSimulator:
         if mode == "charge":
             if "soc_pct" in stop and self.state.soc_pct >= float(stop["soc_pct"]):
                 return True
-            if "pack_v_max" in stop and self.state.voltage_v >= float(stop["pack_v_max"]):
-                return True
-            if "cell_v_max" in stop:
-                # Approximate: pack limit from cell * series count (~10 for 24V LTO)
-                approx = float(stop["cell_v_max"]) * 10
-                if self.state.voltage_v >= approx:
+            # With i_min_a, Vmax alone does not end (mirrors live engine CV hold)
+            if "i_min_a" not in stop:
+                if "pack_v_max" in stop and self.state.voltage_v >= float(stop["pack_v_max"]):
+                    return True
+                if "cell_v_max" in stop:
+                    approx = float(stop["cell_v_max"]) * 10
+                    if self.state.voltage_v >= approx:
+                        return True
+            if "i_min_a" in stop and self.state.voltage_v >= v_set - 0.15:
+                if abs(i) <= float(stop["i_min_a"]):
                     return True
             if self.state.soc_pct >= 99.5:
                 return True

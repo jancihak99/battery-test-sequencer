@@ -21,4 +21,22 @@ if sys.platform == "win32":
 from bts.app import main
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:
+        # pythonw has no console — surface crash so Start BTS.bat isn't "silent fail"
+        import traceback
+
+        tb = traceback.format_exc()
+        try:
+            from PySide6.QtWidgets import QApplication, QMessageBox
+
+            app = QApplication.instance() or QApplication(sys.argv)
+            QMessageBox.critical(
+                None,
+                "BTS — start selhal",
+                f"{exc}\n\n(Detaily v konzoli / traceback níže.)\n\n{tb[-1500:]}",
+            )
+        except Exception:
+            sys.stderr.write(tb)
+        raise

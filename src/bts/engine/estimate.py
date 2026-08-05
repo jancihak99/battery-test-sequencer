@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from bts.models.current import resolve_amps
 from bts.models.program import ModuleProfile, Program, Step
 
 
@@ -43,6 +44,24 @@ def _capacity_ah(profile: ModuleProfile | None) -> float:
     )
 
 
+def _resolve_step_amps(step: Step, profile: ModuleProfile | None, *, amp_key: str) -> float:
+    p = step.params or {}
+    default = 70.0
+    if profile is not None:
+        if amp_key == "pulse_a":
+            default = float(profile.dcir_pulse_a)
+        else:
+            default = float(profile.default_test_current_a)
+    if profile is None:
+        # No profile — fall back to current_a / pulse_a / default
+        raw = p.get(amp_key) or p.get("current_a")
+        return max(0.1, abs(float(raw if raw is not None else default)))
+    try:
+        return max(0.1, abs(resolve_amps(p, profile, amp_key=amp_key, default=default)))
+    except Exception:
+        return max(0.1, abs(float(p.get(amp_key) or default)))
+
+
 def estimate_step(step: Step, profile: ModuleProfile | None = None) -> StepEstimate:
     t = step.type
     p = step.params or {}
@@ -56,6 +75,9 @@ def estimate_step(step: Step, profile: ModuleProfile | None = None) -> StepEstim
         # Handshake is usually quick; timeout is only a ceiling.
         timeout = float(p.get("timeout_s", 60 if t == "bms_ready" else 30))
         est = min(15.0, max(5.0, timeout * 0.25))
+        if t == "bms_ready":
+            # Engine always dwells after contactors close (default 10 s).
+            est += float(p.get("settle_s", 10.0))
         return StepEstimate(step.id, t, est, uncertain=True, note="handshake")
 
     if t == "wait_temp":
@@ -64,14 +86,18 @@ def estimate_step(step: Step, profile: ModuleProfile | None = None) -> StepEstim
         est = min(timeout, max(120.0, timeout * 0.15))
         return StepEstimate(step.id, t, est, uncertain=True, note="cooling")
 
-    if t in ("charge", "discharge"):
-        current = float(
-            p.get("current_a")
-            or (profile.default_test_current_a if profile else 70.0)
-        )
-        current = max(0.1, abs(current))
+    if t in ("charge", "discharge", "goto_soc"):
+        current = _resolve_step_amps(step, profile, amp_key="current_a")
         stop = p.get("stop") or {}
         timeout = float(stop.get("timeout_s", p.get("timeout_s", 8 * 3600)))
+
+        if t == "goto_soc":
+            # Unknown start SOC — assume up to half pack at resolved C-rate/A.
+            ah = cap * 0.5
+            est = ah / current * 3600.0
+            return StepEstimate(
+                step.id, t, min(est, timeout), uncertain=True, note="goto_soc @ I"
+            )
 
         if "ah_target" in stop:
             ah = float(stop["ah_target"])

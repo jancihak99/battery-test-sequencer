@@ -1,0 +1,129 @@
+meta:
+  name: Capacity_DCIR_70Ah_1C_3C
+  module_profile: LTO_24V_70Ah
+  description: >
+    Precondition 50% SOC (any start) → DCIR 5C/10s → full CV 3C (i_min) →
+    capacity 1C → full CV 3C → capacity 3C → charge to 30% SOC. Program Tmax 50°C.
+  t_max_c: 50
+
+steps:
+  - id: ready
+    type: bms_ready
+    timeout_s: 60
+
+  - id: goto_50_soc
+    type: goto_soc
+    soc_pct: 50
+    c_rate: 1.0
+    voltage_v: 27.5
+    timeout_s: 14400
+    abort:
+      dtc_level_max: 2
+
+  - id: wait_10_before_dcir
+    type: wait_time
+    seconds: 10
+
+  - id: dcir_5c
+    type: dcir
+    c_rate: 5.0
+    pulse_s: 10
+    record: true
+
+  - id: wait_10_after_dcir
+    type: wait_time
+    seconds: 10
+
+  - id: charge_full_3c_cv
+    type: charge
+    c_rate: 3.0
+    voltage_v: 27.5
+    timeout_s: 14400
+    record: true
+    stop:
+      pack_v_max: 27.5
+      cell_v_max: 2.75
+      i_min_a: 3.5
+    abort:
+      dtc_level_max: 2
+
+  - id: wait_10_after_full_1
+    type: wait_time
+    seconds: 10
+
+  - id: discharge_cap_1c
+    type: discharge
+    c_rate: 1.0
+    timeout_s: 14400
+    record: true
+    stop:
+      pack_v_min: 17.0
+      cell_v_min: 1.5
+    abort:
+      dtc_level_max: 2
+    measure: capacity_1c_ah
+
+  - id: wait_10_after_cap_1c
+    type: wait_time
+    seconds: 10
+
+  - id: charge_full_3c_cv_2
+    type: charge
+    c_rate: 3.0
+    voltage_v: 27.5
+    timeout_s: 14400
+    record: true
+    stop:
+      pack_v_max: 27.5
+      cell_v_max: 2.75
+      i_min_a: 3.5
+    abort:
+      dtc_level_max: 2
+
+  - id: wait_10_after_full_2
+    type: wait_time
+    seconds: 10
+
+  - id: discharge_cap_3c
+    type: discharge
+    c_rate: 3.0
+    timeout_s: 14400
+    record: true
+    stop:
+      pack_v_min: 17.0
+      cell_v_min: 1.5
+    abort:
+      dtc_level_max: 2
+    measure: capacity_3c_ah
+
+  - id: wait_10_after_cap_3c
+    type: wait_time
+    seconds: 10
+
+  - id: charge_to_30_soc
+    type: charge
+    c_rate: 3.0
+    voltage_v: 27.5
+    timeout_s: 14400
+    stop:
+      soc_pct: 30
+    abort:
+      dtc_level_max: 2
+
+  - id: report
+    type: report
+    include:
+      - capacity_1c_ah
+      - capacity_3c_ah
+      - dcir_mohm
+      - cells
+      - temps
+      - dtc
+
+  - id: notify_done
+    type: notify
+    message: "Hotovo — DCIR + kapacita 1C/3C připraveny ve výstupu (report)."
+
+  - id: idle
+    type: bms_idle
+    timeout_s: 30

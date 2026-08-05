@@ -10,6 +10,7 @@ import yaml
 STEP_TYPES = (
     "bms_ready",
     "bms_idle",
+    "goto_soc",
     "charge",
     "discharge",
     "wait_temp",
@@ -80,6 +81,8 @@ class ProgramMeta:
     name: str
     module_profile: str
     description: str = ""
+    # Applied to power steps when step abort.t_max_c is omitted
+    t_max_c: float | None = None
 
 
 @dataclass
@@ -100,12 +103,15 @@ class Program:
     steps: list[Step] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
+        meta = {
+            "name": self.meta.name,
+            "module_profile": self.meta.module_profile,
+            "description": self.meta.description,
+        }
+        if self.meta.t_max_c is not None:
+            meta["t_max_c"] = float(self.meta.t_max_c)
         return {
-            "meta": {
-                "name": self.meta.name,
-                "module_profile": self.meta.module_profile,
-                "description": self.meta.description,
-            },
+            "meta": meta,
             "steps": [s.to_dict() for s in self.steps],
         }
 
@@ -122,6 +128,7 @@ def load_program(path: Path) -> Program:
         name=str(meta_raw.get("name") or path.stem),
         module_profile=str(meta_raw.get("module_profile") or ""),
         description=str(meta_raw.get("description") or ""),
+        t_max_c=float(meta_raw["t_max_c"]) if meta_raw.get("t_max_c") is not None else None,
     )
     steps: list[Step] = []
     for item in data.get("steps") or []:

@@ -2,18 +2,18 @@ from __future__ import annotations
 
 import copy
 import logging
-import random
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QTimer, Qt, Signal
-from PySide6.QtGui import QFont, QIcon, QKeySequence, QPixmap, QShortcut
+from PySide6.QtCore import QTimer, Qt, Signal, QUrl
+from PySide6.QtGui import QDesktopServices, QFont, QIcon, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
     QFrame,
@@ -36,10 +36,9 @@ from PySide6.QtWidgets import (
 )
 
 from bts.drivers import create_bms_driver, create_ea_driver
-from bts.drivers.bms import MOCK_PREVIEW_SCENARIOS, MockBmsDriver
-from bts.drivers.ea import MockEaRack
 from bts.dtc_catalog import format_active_dtcs, format_dtc_detail
 from bts.engine import SequenceEngine, estimate_program, validate_program
+from bts.engine.sequence import CONTACTOR_SAFE_JOIN_S
 from bts.models.config import AppConfig, load_config, save_bms_settings
 from bts.models.program import (
     Program,
@@ -51,7 +50,7 @@ from bts.models.program import (
     load_program,
     save_program,
 )
-from bts.models.telemetry import BmuState
+from bts.models.telemetry import BmuState, DesiredState
 from bts.ui.dashboard import LiveDashboard
 from bts.ui.diagnostics_tab import DiagnosticsTab
 from bts.ui.simulate_tab import SimulateTab
@@ -63,6 +62,9 @@ log = logging.getLogger(__name__)
 
 class MainWindow(QMainWindow):
     status_tick = Signal()
+    # Cross-thread marshal from sequence engine → GUI thread
+    engine_status = Signal(object)
+    activity_line = Signal(str)
 
     def __init__(self, cfg: AppConfig) -> None:
         super().__init__()
@@ -78,6 +80,9 @@ class MainWindow(QMainWindow):
         self._bms = None
         self._ea = None
         self._active_profile = None
+        self._hw_busy = False
+        self._editor_dirty = False
+        self._editor_row = -1
 
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
@@ -90,7 +95,9 @@ class MainWindow(QMainWindow):
         self._build_diagnostics_tab()
         self._build_branding_bar()
         self._refresh_version_ui()
-        self._update_mock_banner()
+
+        self.engine_status.connect(self._on_engine_status)
+        self.activity_line.connect(self._on_activity_line)
 
         self._reload_lists()
         QShortcut(QKeySequence("Esc"), self, activated=self._stop_run)
@@ -100,6 +107,7 @@ class MainWindow(QMainWindow):
         self.timer.timeout.connect(self._refresh_live)
         self.timer.start()
 
+        self._sync_run_buttons()
         QTimer.singleShot(2500, self._maybe_check_updates_on_startup)
 
     def _apply_window_icon(self) -> None:
@@ -151,7 +159,8 @@ class MainWindow(QMainWindow):
 
         ver = (version or read_version(self.cfg.root) or "0.0.0").strip()
         self._app_version = ver
-        self.setWindowTitle(f"Battery Test Sequencer | EBZ nano power · v{ver}")
+        hw = " · HW ON" if getattr(self, "_hw_live", False) else ""
+        self.setWindowTitle(f"Battery Test Sequencer | EBZ nano power · v{ver}{hw}")
         if hasattr(self, "lbl_status_version"):
             self.lbl_status_version.setText(f"v{ver}")
             self.lbl_status_version.setToolTip(
@@ -208,6 +217,8 @@ class MainWindow(QMainWindow):
         self.serial_edit.setPlaceholderText("Module serial / claim ID")
         self.serial_edit.setMinimumWidth(140)
         self.btn_connect = QPushButton("Připojit HW")
+        self.btn_connect.setMinimumWidth(120)
+        self.btn_connect.setToolTip("Připojí / odpojí Kvaser + EA. Stav je i v pruhu pod toolbarem.")
         self.btn_start = QPushButton("Start")
         self.btn_start.setObjectName("btnPrimary")
         self.btn_stop = QPushButton("Stop (Esc)")
@@ -221,7 +232,7 @@ class MainWindow(QMainWindow):
         self.btn_clear_dtc.setToolTip(
             "App Command bit4 (Reset Latched DTCs). Vyžaduje živý BMS."
         )
-        self.btn_connect.clicked.connect(self._connect_hw)
+        self.btn_connect.clicked.connect(self._on_connect_clicked)
         self.btn_start.clicked.connect(self._start_run)
         self.btn_stop.clicked.connect(self._stop_run)
         self.btn_clear_dtc.clicked.connect(self._clear_bms_dtcs)
@@ -236,13 +247,13 @@ class MainWindow(QMainWindow):
         top.addWidget(self.btn_clear_dtc)
         layout.addWidget(toolbar)
 
-        self.lbl_mock_banner = QLabel("")
-        self.lbl_mock_banner.setVisible(False)
-        self.lbl_mock_banner.setStyleSheet(
-            "background:#9a6700;color:#fff;font-weight:700;padding:8px 12px;border-radius:6px;"
-        )
-        layout.addWidget(self.lbl_mock_banner)
-        self._update_mock_banner()
+        # Large HW status strip — readable on remote desktop
+        self.lbl_hw_banner = QLabel("HW: odpojeno — klikni Připojit HW")
+        self.lbl_hw_banner.setAlignment(Qt.AlignCenter)
+        self.lbl_hw_banner.setWordWrap(True)
+        self.lbl_hw_banner.setMinimumHeight(40)
+        self.lbl_hw_banner.setStyleSheet(self._hw_banner_style("off"))
+        layout.addWidget(self.lbl_hw_banner)
 
         # Link strip: bus open ≠ BMU talking
         link_bar = QFrame()
@@ -260,6 +271,7 @@ class MainWindow(QMainWindow):
         link_row.addWidget(self.lbl_link_bms, 1)
         link_row.addWidget(self.lbl_link_ea, 1)
         layout.addWidget(link_bar)
+        self._hw_live = False
 
         split = QSplitter()
         split.setHandleWidth(6)
@@ -364,9 +376,21 @@ class MainWindow(QMainWindow):
         self.ed_profile = QComboBox()
         self.ed_profile.setToolTip("Battery module profile for the whole program (all steps).")
         self.ed_desc = QLineEdit()
+        self.ed_prog_tmax = QDoubleSpinBox()
+        self.ed_prog_tmax.setRange(0, 100)
+        self.ed_prog_tmax.setSuffix(" °C")
+        self.ed_prog_tmax.setValue(50)
+        self.ed_prog_tmax.setToolTip(
+            "Max teplota pro celý program (abort). Platí u charge/discharge/dcir/goto_soc, "
+            "pokud krok nemá vlastní abort.t_max_c."
+        )
+        self.chk_prog_tmax = QCheckBox("Program Tmax (abort)")
+        self.chk_prog_tmax.setChecked(True)
         meta.addRow("Name", self.ed_name)
         meta.addRow("Module profile", self.ed_profile)
         meta.addRow("Description", self.ed_desc)
+        meta.addRow("", self.chk_prog_tmax)
+        meta.addRow("Tmax celý program", self.ed_prog_tmax)
         meta_outer.addLayout(meta)
         layout.addWidget(meta_box)
 
@@ -445,10 +469,16 @@ class MainWindow(QMainWindow):
         w = QWidget()
         layout = QVBoxLayout(w)
         self.history_list = QListWidget()
-        btn = QPushButton("Obnovit / otevřít složku")
-        btn.clicked.connect(self._refresh_history)
+        row = QHBoxLayout()
+        btn_refresh = QPushButton("Obnovit")
+        btn_refresh.clicked.connect(self._refresh_history)
+        btn_folder = QPushButton("Otevřít složku runs")
+        btn_folder.clicked.connect(self._open_runs_folder)
+        row.addWidget(btn_refresh)
+        row.addWidget(btn_folder)
+        row.addStretch(1)
         self.history_list.itemDoubleClicked.connect(self._open_history_item)
-        layout.addWidget(btn)
+        layout.addLayout(row)
         layout.addWidget(self.history_list, 1)
         self.tabs.addTab(w, "Historie")
 
@@ -460,10 +490,6 @@ class MainWindow(QMainWindow):
 
         form = QFormLayout()
         form.setSpacing(8)
-        self.chk_mock = QCheckBox("Use mock hardware (offline)")
-        self.chk_mock.setChecked(self.cfg.use_mock_hardware)
-        self.chk_mock.toggled.connect(self._on_mock_toggled)
-        form.addRow(self.chk_mock)
 
         hdr = QLabel("External CAN (Kvaser ↔ BMU)")
         hdr.setStyleSheet("font-weight:600; margin-top:8px;")
@@ -645,10 +671,6 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(w, "Nastavení")
         self._pending_release = None
 
-    def _on_mock_toggled(self, checked: bool) -> None:
-        self.cfg.use_mock_hardware = bool(checked)
-        self._update_mock_banner()
-
     def _save_update_settings(self) -> None:
         from bts.update import UpdateConfig, save_update_config, write_token
 
@@ -708,8 +730,16 @@ class MainWindow(QMainWindow):
     def _apply_updates(self, *, confirm: bool = True) -> None:
         from bts.update import apply_best_update, spawn_external_updater
 
-        if self.engine and getattr(self.engine, "_thread", None) and self.engine._thread.is_alive():
+        if self._engine_is_alive():
             QMessageBox.warning(self, "Aktualizace", "Nejdřív Stop / dokonči běžící test.")
+            return
+        if self._bench_needs_safe_shutdown():
+            QMessageBox.warning(
+                self,
+                "Aktualizace",
+                "Nejdřív bezpečně vypni (stykače / EA) — zavři app přes Bezpečně vypnout, "
+                "nebo Stop + IDLE, pak update.",
+            )
             return
         if confirm:
             reply = QMessageBox.question(
@@ -780,19 +810,6 @@ class MainWindow(QMainWindow):
         except Exception:
             logging.getLogger(__name__).exception("Startup update check failed")
 
-    def _update_mock_banner(self) -> None:
-        if not hasattr(self, "lbl_mock_banner"):
-            return
-        mock_on = bool(getattr(self, "chk_mock", None) and self.chk_mock.isChecked())
-        if mock_on or self.cfg.use_mock_hardware:
-            self.lbl_mock_banner.setText(
-                "MOCK HW ZAPNUTÝ — žádná komunikace se skutečným PSI/EL/BMU. "
-                "Pro laboratoř vypni v Nastavení."
-            )
-            self.lbl_mock_banner.setVisible(True)
-        else:
-            self.lbl_mock_banner.setVisible(False)
-
     def _read_ea_form(self) -> None:
         if self.cfg.ea is None or not hasattr(self, "ed_psi_port"):
             return
@@ -843,7 +860,9 @@ class MainWindow(QMainWindow):
         except ValueError as exc:
             QMessageBox.warning(self, "CAN settings", str(exc))
             return
-        self.cfg.use_mock_hardware = self.chk_mock.isChecked()
+        if not self._confirm_abort_if_running("Apply CAN"):
+            return
+        self.cfg.use_mock_hardware = False
         # Live drivers hold old bus — force reconnect on next Connect
         if self._bms is not None or self._ea is not None:
             self._disconnect_hw()
@@ -861,11 +880,13 @@ class MainWindow(QMainWindow):
             f"Active: ch={self.cfg.bms.channel} @ {self.cfg.bms.bitrate} · "
             f"BMU=0x{self.cfg.bms.bmu_address:02X} · App=0x{self.cfg.bms.app_address:02X}"
         )
+        self.statusBar().showMessage("CAN nastavení aplikováno — znovu Připojit HW", 5000)
+        self._sync_run_buttons()
 
     def _save_can_settings(self) -> None:
         try:
             self._read_can_form()
-            self.cfg.use_mock_hardware = self.chk_mock.isChecked()
+            self.cfg.use_mock_hardware = False
             path = save_bms_settings(self.cfg)
         except Exception as exc:
             QMessageBox.warning(self, "Save failed", str(exc))
@@ -874,13 +895,6 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "Saved", f"Saved BMS settings to\n{path}")
 
     def _auto_detect_can(self) -> None:
-        if self.chk_mock.isChecked():
-            QMessageBox.information(
-                self,
-                "Auto-detect",
-                "Turn OFF mock hardware first — discovery needs a real Kvaser + BMU.",
-            )
-            return
         if self._bms is not None or self._ea is not None:
             ans = QMessageBox.question(
                 self,
@@ -944,28 +958,71 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.diagnostics_tab, "Diagnostika")
 
     def _reload_lists(self) -> None:
+        keep = self.program_path
         self.program_combo.blockSignals(True)
         self.program_combo.clear()
         for p in list_programs(self.cfg.programs_path):
             label = p.stem
             if "dev" in p.parts:
-                label = f"[DEV/MOCK] {p.stem}"
+                label = f"[DEV] {p.stem}"
             self.program_combo.addItem(label, str(p))
-        self.program_combo.blockSignals(False)
         self.ed_profile.clear()
         for p in list_profiles(self.cfg.profiles_path):
             self.ed_profile.addItem(p.stem, str(p))
+        select_idx = 0
+        if keep is not None:
+            keep_res = keep.resolve()
+            for i in range(self.program_combo.count()):
+                data = self.program_combo.itemData(i)
+                if data and Path(data).resolve() == keep_res:
+                    select_idx = i
+                    break
+        self.program_combo.blockSignals(False)
         if self.program_combo.count():
-            self._on_program_selected(0)
+            self.program_combo.setCurrentIndex(select_idx)
+            self._on_program_selected(select_idx)
         self._refresh_history()
+
+    def _mark_editor_dirty(self) -> None:
+        self._editor_dirty = True
+
+    def _confirm_discard_edits(self, action: str = "pokračovat") -> bool:
+        if not self._editor_dirty:
+            return True
+        ans = QMessageBox.question(
+            self,
+            "Neuložené změny",
+            f"Editor má neuložené změny.\nOpravdu {action} a zahodit je?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        return ans == QMessageBox.Yes
 
     def _on_program_selected(self, idx: int) -> None:
         if idx < 0:
             return
         path = Path(self.program_combo.itemData(idx))
+        # Switching away from an unsaved / different program
+        if (
+            self.program is not None
+            and self._editor_dirty
+            and (self.program_path is None or path.resolve() != self.program_path.resolve())
+        ):
+            if not self._confirm_discard_edits("načíst jiný program"):
+                # Revert combo selection
+                self.program_combo.blockSignals(True)
+                if self.program_path is not None:
+                    for i in range(self.program_combo.count()):
+                        data = self.program_combo.itemData(i)
+                        if data and Path(data).resolve() == self.program_path.resolve():
+                            self.program_combo.setCurrentIndex(i)
+                            break
+                self.program_combo.blockSignals(False)
+                return
         self.program = load_program(path)
         self.program_path = path
-        self.profile_label.setText(f"Profile: {self.program.meta.module_profile}")
+        self._editor_dirty = False
+        self.profile_label.setText(f"Profil: {self.program.meta.module_profile}")
         try:
             self._active_profile = load_profile(
                 self.cfg.profiles_path / f"{self.program.meta.module_profile}.yaml"
@@ -991,6 +1048,12 @@ class MainWindow(QMainWindow):
         if i >= 0:
             self.ed_profile.setCurrentIndex(i)
         self.ed_desc.setText(self.program.meta.description)
+        tmax = getattr(self.program.meta, "t_max_c", None)
+        self.chk_prog_tmax.setChecked(tmax is not None)
+        if tmax is not None:
+            self.ed_prog_tmax.setValue(float(tmax))
+        else:
+            self.ed_prog_tmax.setValue(50.0)
         self.step_list.clear()
         for s in self.program.steps:
             summary = self._step_summary(s)
@@ -1015,6 +1078,7 @@ class MainWindow(QMainWindow):
             return
         try:
             self.program.steps[row] = self.step_form.build_step()
+            self._editor_dirty = True
         except Exception:
             logging.getLogger(__name__).exception("Auto-apply step failed")
 
@@ -1037,6 +1101,7 @@ class MainWindow(QMainWindow):
         if row < 0:
             return
         self.program.steps[row] = step
+        self._editor_dirty = True
         self._sync_editor_from_program()
         self.step_list.setCurrentRow(row)
 
@@ -1044,8 +1109,12 @@ class MainWindow(QMainWindow):
         if not self.program:
             self._new_program()
         assert self.program
+        row = self.step_list.currentRow()
+        if row >= 0:
+            self._commit_editor_row(row)
         n = len(self.program.steps) + 1
         self.program.steps.append(Step(id=f"wait_{n}", type="wait_time", params={"seconds": 60}))
+        self._editor_dirty = True
         self._sync_editor_from_program()
         self.step_list.setCurrentRow(len(self.program.steps) - 1)
 
@@ -1053,19 +1122,36 @@ class MainWindow(QMainWindow):
         if not self.program:
             return
         row = self.step_list.currentRow()
-        if row >= 0:
-            del self.program.steps[row]
-            self._sync_editor_from_program()
+        if row < 0:
+            return
+        self._commit_editor_row(row)
+        sid = self.program.steps[row].id
+        ans = QMessageBox.question(
+            self,
+            "Smazat krok?",
+            f"Opravdu smazat krok „{sid}“?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if ans != QMessageBox.Yes:
+            return
+        del self.program.steps[row]
+        self._editor_dirty = True
+        self._sync_editor_from_program()
+        if self.program.steps:
+            self.step_list.setCurrentRow(min(row, len(self.program.steps) - 1))
 
     def _move_up(self) -> None:
         if not self.program:
             return
         row = self.step_list.currentRow()
         if row > 0:
+            self._commit_editor_row(row)
             self.program.steps[row - 1], self.program.steps[row] = (
                 self.program.steps[row],
                 self.program.steps[row - 1],
             )
+            self._editor_dirty = True
             self._sync_editor_from_program()
             self.step_list.setCurrentRow(row - 1)
 
@@ -1074,14 +1160,18 @@ class MainWindow(QMainWindow):
             return
         row = self.step_list.currentRow()
         if 0 <= row < len(self.program.steps) - 1:
+            self._commit_editor_row(row)
             self.program.steps[row + 1], self.program.steps[row] = (
                 self.program.steps[row],
                 self.program.steps[row + 1],
             )
+            self._editor_dirty = True
             self._sync_editor_from_program()
             self.step_list.setCurrentRow(row + 1)
 
     def _new_program(self) -> None:
+        if not self._confirm_discard_edits("vytvořit nový program"):
+            return
         profile = self.ed_profile.currentText() or "LTO_24V_70Ah"
         self.program = Program(
             meta=ProgramMeta(name="New_program", module_profile=profile, description=""),
@@ -1091,13 +1181,17 @@ class MainWindow(QMainWindow):
             ],
         )
         self.program_path = None
+        self._editor_dirty = True
         self._sync_editor_from_program()
 
     def _open_program(self) -> None:
+        if not self._confirm_discard_edits("otevřít jiný program"):
+            return
         path, _ = QFileDialog.getOpenFileName(self, "Open program", str(self.cfg.programs_path), "YAML (*.yaml)")
         if path:
             self.program = load_program(Path(path))
             self.program_path = Path(path)
+            self._editor_dirty = False
             self._sync_editor_from_program()
             self._reload_lists()
 
@@ -1107,6 +1201,10 @@ class MainWindow(QMainWindow):
         self.program.meta.name = self.ed_name.text().strip() or "Untitled"
         self.program.meta.module_profile = self.ed_profile.currentText()
         self.program.meta.description = self.ed_desc.text()
+        if self.chk_prog_tmax.isChecked():
+            self.program.meta.t_max_c = float(self.ed_prog_tmax.value())
+        else:
+            self.program.meta.t_max_c = None
 
     def _current_profile(self):
         if not self.program:
@@ -1145,8 +1243,10 @@ class MainWindow(QMainWindow):
             path = Path(path)
         save_program(self.program, path)
         self.program_path = path
-        QMessageBox.information(self, "Saved", f"Saved to {path}")
+        self._editor_dirty = False
+        QMessageBox.information(self, "Uloženo", f"Uloženo do\n{path}")
         self._reload_lists()
+        self.statusBar().showMessage(f"Program uložen: {path.name}", 4000)
 
     def _validate_program(self) -> None:
         if not self.program:
@@ -1161,11 +1261,126 @@ class MainWindow(QMainWindow):
         else:
             QMessageBox.information(self, "Validation", "OK — program is consistent")
 
+    def _hw_banner_style(self, kind: str) -> str:
+        # High-contrast fills for RDP / small remote windows
+        styles = {
+            "off": (
+                "background:#5c6770;color:#ffffff;font-weight:800;font-size:15px;"
+                "padding:10px 14px;border-radius:8px;border:2px solid #3d454c;"
+            ),
+            "busy": (
+                "background:#9a6700;color:#ffffff;font-weight:800;font-size:15px;"
+                "padding:10px 14px;border-radius:8px;border:2px solid #7a5200;"
+            ),
+            "ok": (
+                "background:#1a7f37;color:#ffffff;font-weight:800;font-size:15px;"
+                "padding:10px 14px;border-radius:8px;border:2px solid #0f5c26;"
+            ),
+            "partial": (
+                "background:#bf8700;color:#ffffff;font-weight:800;font-size:15px;"
+                "padding:10px 14px;border-radius:8px;border:2px solid #8a6200;"
+            ),
+            "bad": (
+                "background:#cf222e;color:#ffffff;font-weight:800;font-size:15px;"
+                "padding:10px 14px;border-radius:8px;border:2px solid #8b151c;"
+            ),
+        }
+        return styles.get(kind, styles["off"])
+
+    def _signal_attention(self, *, ok: bool) -> None:
+        """Beep + flash taskbar — helps when watching the PC over RDP."""
+        try:
+            QApplication.beep()
+        except Exception:
+            pass
+        try:
+            import winsound
+
+            winsound.MessageBeep(winsound.MB_OK if ok else winsound.MB_ICONHAND)
+        except Exception:
+            pass
+        try:
+            QApplication.alert(self, 0)
+        except Exception:
+            pass
+
+    def _set_hw_banner(self, kind: str, text: str) -> None:
+        if not hasattr(self, "lbl_hw_banner"):
+            return
+        self.lbl_hw_banner.setText(text)
+        self.lbl_hw_banner.setStyleSheet(self._hw_banner_style(kind))
+
+    def _update_connect_button(self, live: bool) -> None:
+        self._hw_live = bool(live)
+        if not hasattr(self, "btn_connect"):
+            return
+        if live:
+            self.btn_connect.setText("Odpojit HW")
+            self.btn_connect.setStyleSheet(
+                "QPushButton { background:#1a7f37; color:#fff; font-weight:700; "
+                "padding:6px 14px; border-radius:6px; border:2px solid #0f5c26; }"
+                "QPushButton:hover { background:#146c2e; }"
+            )
+            self.btn_connect.setToolTip("HW je připojené — kliknutím odpojíš BMS + EA")
+        else:
+            self.btn_connect.setText("Připojit HW")
+            self.btn_connect.setStyleSheet("")
+            self.btn_connect.setToolTip("Připojí Kvaser + EA. Stav je v zeleném/šedém pruhu pod toolbarem.")
+
+    def _on_connect_clicked(self) -> None:
+        if getattr(self, "_hw_live", False) and self._bms is not None and self._ea is not None:
+            if self._engine_is_alive():
+                ans = QMessageBox.warning(
+                    self,
+                    "Odpojit HW?",
+                    "Běží test — odpojení okamžitě STOPNE sekvenci a odpojí CAN/EA.\n\nPokračovat?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No,
+                )
+                if ans != QMessageBox.Yes:
+                    return
+            self._disconnect_hw()
+            self._set_hw_banner("off", "HW: odpojeno")
+            self._update_connect_button(False)
+            self._sync_run_buttons()
+            self._refresh_version_ui()
+            self._log("HW odpojeno")
+            self._signal_attention(ok=True)
+            return
+        self._connect_hw()
+
+    def _confirm_abort_if_running(self, action: str) -> bool:
+        if not self._engine_is_alive():
+            return True
+        ans = QMessageBox.warning(
+            self,
+            action,
+            f"{action} během běžícího testu ho ukončí (Stop + odpojení).\n\nPokračovat?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        return ans == QMessageBox.Yes
+
+    def _sync_run_buttons(self) -> None:
+        alive = self._engine_is_alive()
+        busy = bool(getattr(self, "_hw_busy", False))
+        if hasattr(self, "btn_start"):
+            self.btn_start.setEnabled(not alive and not busy)
+            self.btn_start.setToolTip(
+                "Test běží — nejdřív Stop" if alive else ("Připojuji HW…" if busy else "Spustit načtený program")
+            )
+        if hasattr(self, "btn_stop"):
+            self.btn_stop.setEnabled(alive)
+            self.btn_stop.setToolTip("Zastavit test (EA off → I≈0 → stykače)" if alive else "Žádný běžící test")
+        if hasattr(self, "btn_connect") and not busy:
+            # connect enable managed separately during connect; when not busy keep as-is unless we need
+            pass
+
     def _disconnect_hw(self) -> None:
         if self.engine is not None:
             try:
                 self.engine.abort()
-                self.engine.join(timeout_s=25.0)
+                self.engine.join(timeout_s=CONTACTOR_SAFE_JOIN_S)
             except Exception:
                 pass
             self.engine = None
@@ -1182,6 +1397,174 @@ class MainWindow(QMainWindow):
                 logging.getLogger(__name__).exception("BMS disconnect failed")
             self._bms = None
         self._set_link_labels(None, None)
+        self._update_connect_button(False)
+        if hasattr(self, "lbl_hw_banner"):
+            self._set_hw_banner("off", "HW: odpojeno — klikni Připojit HW")
+
+    def _engine_is_alive(self) -> bool:
+        eng = self.engine
+        if eng is None:
+            return False
+        t = getattr(eng, "_thread", None)
+        return t is not None and t.is_alive()
+
+    def _bench_needs_safe_shutdown(self) -> bool:
+        """True when quitting would leave EA on or contactors closed."""
+        if self._engine_is_alive():
+            return True
+        if self._ea is not None:
+            try:
+                et = self._ea.telemetry()
+                if et.psi_output_on or et.el_input_on or (et.active_mode in ("charge", "discharge")):
+                    return True
+                if abs(et.psi_current_a) > 1.0 or abs(et.el_current_a) > 1.0:
+                    return True
+            except Exception:
+                pass
+        if self._bms is not None:
+            try:
+                b = self._bms.telemetry()
+                if b.operating_state in (BmuState.READY, BmuState.PRE_CHARGE):
+                    return True
+                st = b.contactors_effective
+                if st.main_pos or st.main_neg or st.precharge:
+                    return True
+            except Exception:
+                pass
+        return False
+
+    def _safe_power_down_for_quit(self) -> bool:
+        """EA off → wait I≈0 → IDLE. Returns False if contactors could not open."""
+        self._log("Bezpečné vypnutí před zavřením…")
+        QApplication.processEvents()
+        if self._engine_is_alive() and self.engine is not None:
+            self.engine.abort()
+            self.engine.join(timeout_s=CONTACTOR_SAFE_JOIN_S)
+            self.engine = None
+        if self._ea is not None:
+            try:
+                self._ea.all_off()
+            except Exception:
+                log.exception("EA all_off on quit")
+        i_max = 1.5
+        timeout_s = 20.0
+        min_dwell = 1.5
+        hold_s = 1.5
+        t0 = time.monotonic()
+        while True:
+            if self._ea is not None:
+                try:
+                    self._ea.all_off()
+                except Exception:
+                    pass
+            pack_i = 0.0
+            ea_i = 0.0
+            if self._bms is not None:
+                try:
+                    b = self._bms.telemetry()
+                    if b.pack_current_a is not None:
+                        pack_i = abs(float(b.pack_current_a))
+                except Exception:
+                    pass
+            if self._ea is not None:
+                try:
+                    e = self._ea.telemetry()
+                    ea_i = max(abs(float(e.psi_current_a)), abs(float(e.el_current_a)))
+                except Exception:
+                    pass
+            i_now = max(pack_i, ea_i)
+            elapsed = time.monotonic() - t0
+            if elapsed >= min_dwell and i_now <= i_max:
+                hold_t0 = time.monotonic()
+                ok_hold = True
+                while time.monotonic() - hold_t0 < hold_s:
+                    if self._ea is not None:
+                        try:
+                            self._ea.all_off()
+                        except Exception:
+                            pass
+                    i_hold = 0.0
+                    if self._bms is not None:
+                        try:
+                            bb = self._bms.telemetry()
+                            if bb.pack_current_a is not None:
+                                i_hold = abs(float(bb.pack_current_a))
+                        except Exception:
+                            pass
+                    if self._ea is not None:
+                        try:
+                            ee = self._ea.telemetry()
+                            i_hold = max(
+                                i_hold,
+                                abs(float(ee.psi_current_a)),
+                                abs(float(ee.el_current_a)),
+                            )
+                        except Exception:
+                            pass
+                    if i_hold > i_max:
+                        ok_hold = False
+                        break
+                    QApplication.processEvents()
+                    time.sleep(0.2)
+                if ok_hold:
+                    break
+            if elapsed >= timeout_s:
+                QMessageBox.critical(
+                    self,
+                    "Nelze bezpečně zavřít",
+                    f"Proud stále {i_now:.1f} A po {timeout_s:.0f}s — stykače NEOTEVÍRÁME.\n"
+                    "Zkontroluj EA off / pojistku / kabeláž a zkus znovu.",
+                )
+                return False
+            QApplication.processEvents()
+            time.sleep(0.25)
+        if self._bms is not None:
+            try:
+                self._bms.set_desired_state(DesiredState.IDLE)
+                t_idle = time.monotonic()
+                while time.monotonic() - t_idle < 8.0:
+                    if self._bms.telemetry().operating_state == BmuState.IDLE:
+                        break
+                    QApplication.processEvents()
+                    time.sleep(0.2)
+            except Exception:
+                log.exception("BMS IDLE on quit failed")
+                return False
+        self._log("Bezpečné vypnutí hotovo — zavírám")
+        return True
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        if not self._bench_needs_safe_shutdown():
+            # Idle but connected — release Kvaser/COM so other tools can use them
+            if self._bms is not None or self._ea is not None:
+                try:
+                    self._disconnect_hw()
+                except Exception:
+                    log.exception("disconnect on quit failed")
+            event.accept()
+            return
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Warning)
+        box.setWindowTitle("Zavřít BTS?")
+        box.setText("Nelze zavřít přímo — běží test, EA je aktivní, nebo jsou sepnuté stykače.")
+        box.setInformativeText(
+            "Bezpečné vypnutí: vypne zdroj a zátěž, počká až I≈0 "
+            "(kontroluje proud, ať se neničí stykače), rozepne stykače a teprve pak ukončí aplikaci."
+        )
+        safe_btn = box.addButton("Bezpečně vypnout a zavřít", QMessageBox.AcceptRole)
+        box.addButton("Zůstat", QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() != safe_btn:
+            event.ignore()
+            return
+        if not self._safe_power_down_for_quit():
+            event.ignore()
+            return
+        try:
+            self._disconnect_hw()
+        except Exception:
+            pass
+        event.accept()
 
     def _set_link_labels(self, bms, ea) -> None:
         ok = "#1a7f37"
@@ -1189,6 +1572,8 @@ class MainWindow(QMainWindow):
         bad = "#cf222e"
         dim = TEXT_DIM
 
+        bms_ok = False
+        bms_partial = False
         if bms is None:
             self.lbl_link_bms.setText("BMS: not connected")
             self.lbl_link_bms.setStyleSheet(f"color:{dim};font-weight:600;")
@@ -1202,18 +1587,22 @@ class MainWindow(QMainWindow):
                     + (f" · {cells} cells" if cells else " · waiting for cells")
                 )
                 self.lbl_link_bms.setStyleSheet(f"color:{ok};font-weight:600;")
+                bms_ok = True
             else:
                 self.lbl_link_bms.setText(f"BMS: stale RX ({age:.1f}s) · check CAN")
                 self.lbl_link_bms.setStyleSheet(f"color:{warn};font-weight:600;")
+                bms_partial = True
         elif bms.connected:
             self.lbl_link_bms.setText(
                 "BMS: Kvaser open — no BMU frames (External CAN / bitrate / address?)"
             )
             self.lbl_link_bms.setStyleSheet(f"color:{bad};font-weight:600;")
+            bms_partial = True
         else:
             self.lbl_link_bms.setText("BMS: disconnected")
             self.lbl_link_bms.setStyleSheet(f"color:{dim};font-weight:600;")
 
+        ea_ok = False
         if ea is None:
             running = (
                 self.engine is not None
@@ -1225,6 +1614,7 @@ class MainWindow(QMainWindow):
                 el = self.cfg.ea.el.serial_port if self.cfg.ea else "?"
                 self.lbl_link_ea.setText(f"EA: run · PSI {psi} · EL {el}")
                 self.lbl_link_ea.setStyleSheet(f"color:{ok};font-weight:600;")
+                ea_ok = True
             else:
                 self.lbl_link_ea.setText("EA: not connected")
                 self.lbl_link_ea.setStyleSheet(f"color:{dim};font-weight:600;")
@@ -1233,84 +1623,125 @@ class MainWindow(QMainWindow):
             el = self.cfg.ea.el.serial_port if self.cfg.ea else "?"
             self.lbl_link_ea.setText(f"EA: OK · PSI {psi} · EL {el}")
             self.lbl_link_ea.setStyleSheet(f"color:{ok};font-weight:600;")
+            ea_ok = True
         else:
             self.lbl_link_ea.setText("EA: disconnected")
             self.lbl_link_ea.setStyleSheet(f"color:{bad};font-weight:600;")
 
+        live = self._bms is not None and self._ea is not None
+        self._update_connect_button(live)
+        if not live:
+            self._set_hw_banner("off", "HW: odpojeno — klikni Připojit HW")
+        elif bms_ok and ea_ok:
+            self._set_hw_banner("ok", "HW PŘIPOJENO — BMS RX OK · EA OK  (můžeš Start)")
+        elif ea_ok and bms_partial:
+            self._set_hw_banner(
+                "partial",
+                "HW částečně — EA OK, ale BMS bez živých dat (zkontroluj External CAN / BMU)",
+            )
+        elif ea_ok:
+            self._set_hw_banner("partial", "HW částečně — EA OK, BMS čeká na data…")
+        else:
+            self._set_hw_banner("partial", "HW otevřeno — čekám na potvrzení spojení…")
+
     def _connect_hw(self) -> None:
-        use_mock = self.chk_mock.isChecked()
-        self.cfg.use_mock_hardware = use_mock
+        if self._hw_busy:
+            return
+        self.cfg.use_mock_hardware = False
         # Always request full cell voltage stream on External CAN
         self.cfg.bms.request_cell_voltages = True
         self.cfg.bms.request_temperatures = True
         self.cfg.bms.request_cell_balance = True
         self._disconnect_hw()
+        self._hw_busy = True
+        self._sync_run_buttons()
+        self._set_hw_banner("busy", "HW: připojuji Kvaser + EA…")
+        self.btn_connect.setEnabled(False)
+        QApplication.processEvents()
         try:
-            self._bms = create_bms_driver(self.cfg.bms, use_mock)
-            mock_bms = self._bms if isinstance(self._bms, MockBmsDriver) else None
+            self._bms = create_bms_driver(self.cfg.bms, False)
             assert self.cfg.ea
-            self._ea = create_ea_driver(self.cfg.ea, use_mock, mock_bms=mock_bms)
+            self._ea = create_ea_driver(self.cfg.ea, False, mock_bms=None)
             self._bms.connect()
             self._bms.start()
             self._ea.connect()
-            if mock_bms is not None and isinstance(self._ea, MockEaRack):
-                scenario = random.choice(MOCK_PREVIEW_SCENARIOS)
-                current = random.choice([40.0, 70.0, 100.0, 150.0])
-                mock_bms.apply_ui_preview(scenario, current_a=current)
-                self._ea.apply_ui_preview(scenario, current_a=current)
-                self._log(
-                    f"Connected (mock) — preview: {scenario}"
-                    + (f" @ {current:.0f} A" if scenario in ("charge", "discharge") else "")
-                )
-            else:
-                cmd_id = (
-                    0x18EF0000
-                    | ((self.cfg.bms.bmu_address & 0xFF) << 8)
-                    | (self.cfg.bms.app_address & 0xFF)
-                )
-                self._log(
-                    f"Kvaser open ch={self.cfg.bms.channel} @ {self.cfg.bms.bitrate} — "
-                    f"App Command 0x{cmd_id:08X} every {self.cfg.bms.heartbeat_period_ms} ms "
-                    f"(request cells+temps+balance)…"
-                )
+            cmd_id = (
+                0x18EF0000
+                | ((self.cfg.bms.bmu_address & 0xFF) << 8)
+                | (self.cfg.bms.app_address & 0xFF)
+            )
+            self._log(
+                f"Kvaser open ch={self.cfg.bms.channel} @ {self.cfg.bms.bitrate} — "
+                f"App Command 0x{cmd_id:08X} every {self.cfg.bms.heartbeat_period_ms} ms "
+                f"(request cells+temps+balance)…"
+            )
+            QApplication.processEvents()
+            got_rx = False
+            deadline = time.monotonic() + 3.0
+            while time.monotonic() < deadline:
+                if self._bms.is_healthy(2.0):
+                    got_rx = True
+                    break
                 QApplication.processEvents()
-                got_rx = False
-                deadline = time.monotonic() + 3.0
-                while time.monotonic() < deadline:
-                    if self._bms.is_healthy(2.0):
-                        got_rx = True
-                        break
-                    QApplication.processEvents()
-                    time.sleep(0.05)
-                tel = self._bms.telemetry()
-                ea_tel = self._ea.telemetry()
-                self._set_link_labels(tel, ea_tel)
-                if got_rx:
-                    cells = len([v for v in tel.cell_voltages if v == v])
-                    self._log(
-                        f"Connected (live) — BMU RX OK ({tel.rx_count} frames, "
-                        f"state={tel.operating_state.name}, cells={cells or 'pending'})"
-                    )
-                else:
-                    detail = self._bms.health_detail()
-                    self._log(f"Connected (live) — NO BMU frames yet. {detail}")
-                    QMessageBox.warning(
-                        self,
-                        "BMS: no data from BMU",
-                        "Kvaser and EA opened, but no CAN frames from the BMU.\n\n"
-                        f"{detail}\n\n"
-                        "Typical causes:\n"
-                        "• Kvaser not on External CAN (internal BMU↔LMU bus)\n"
-                        "• BMU not powered / wrong bitrate\n"
-                        "• Wrong App SA (try 0x20 ACU vs 0xF9 Service Tool)\n\n"
-                        "Do not Start a run until the BMS line turns green.",
-                    )
+                time.sleep(0.05)
+            tel = self._bms.telemetry()
+            ea_tel = self._ea.telemetry()
+            self._set_link_labels(tel, ea_tel)
+            if got_rx:
+                cells = len([v for v in tel.cell_voltages if v == v])
+                self._log(
+                    f"Connected (live) — BMU RX OK ({tel.rx_count} frames, "
+                    f"state={tel.operating_state.name}, cells={cells or 'pending'})"
+                )
+                self._set_hw_banner(
+                    "ok",
+                    f"HW PŘIPOJENO — BMS {tel.operating_state.name} · "
+                    f"{tel.rx_count} frames · EA OK",
+                )
+                self._signal_attention(ok=True)
+            else:
+                detail = self._bms.health_detail()
+                self._log(f"Connected (live) — NO BMU frames yet. {detail}")
+                self._set_hw_banner(
+                    "partial",
+                    "HW částečně — EA/Kvaser OK, ale žádná data z BMU (External CAN?)",
+                )
+                self._signal_attention(ok=False)
+                QMessageBox.warning(
+                    self,
+                    "BMS: no data from BMU",
+                    "Kvaser and EA opened, but no CAN frames from the BMU.\n\n"
+                    f"{detail}\n\n"
+                    "Typical causes:\n"
+                    "• Kvaser not on External CAN (internal BMU↔LMU bus)\n"
+                    "• BMU not powered / wrong bitrate\n"
+                    "• Wrong App SA (try 0x20 ACU vs 0xF9 Service Tool)\n\n"
+                    "Do not Start a run until the BMS line turns green.",
+                )
             self._refresh_live()
+            self._refresh_version_ui()
         except Exception as exc:
             self._disconnect_hw()
+            self._set_hw_banner("bad", f"HW PŘIPOJENÍ SELHALO — {exc}")
+            self._signal_attention(ok=False)
             QMessageBox.critical(self, "Connect failed", str(exc))
+            self._log(f"Connect failed: {exc}")
+        finally:
+            self._hw_busy = False
+            self.btn_connect.setEnabled(True)
+            self._sync_run_buttons()
 
     def _start_run(self) -> None:
+        if self._hw_busy:
+            QMessageBox.information(self, "Start", "Ještě probíhá připojení HW — chvíli počkej.")
+            return
+        if self._engine_is_alive():
+            QMessageBox.warning(
+                self,
+                "Start",
+                "Test už běží — nejdřív Stop, nebo počkej na dokončení.",
+            )
+            return
         if self.program is None:
             QMessageBox.warning(self, "Start", "Není načtený program")
             return
@@ -1319,12 +1750,12 @@ class MainWindow(QMainWindow):
         if row >= 0:
             self._commit_editor_row(row)
         path = self.program_path
-        if path is not None and "dev" in Path(path).parts and not self.chk_mock.isChecked():
+        if path is not None and "dev" in Path(path).parts:
             ans = QMessageBox.warning(
                 self,
-                "DEV/MOCK program",
-                f"Program „{path.name}“ je ve složce programs/dev (smoke/mock).\n"
-                "Není určen pro ostrý modul se zapnutým živým HW.\n\n"
+                "DEV program",
+                f"Program „{path.name}“ je ve složce programs/dev (smoke).\n"
+                "Není určen pro ostrý modul.\n\n"
                 "Přesto spustit?",
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No,
@@ -1352,11 +1783,6 @@ class MainWindow(QMainWindow):
                 "Fix the External CAN link first (BMS line must be green).",
             )
             return
-        # Drop Connect-time UI preview before a real sequence
-        if isinstance(self._bms, MockBmsDriver):
-            self._bms.clear_ui_preview()
-        if isinstance(self._ea, MockEaRack):
-            self._ea.all_off()
         profile = self._current_profile()
         self.engine = SequenceEngine(
             bms=self._bms,
@@ -1377,31 +1803,44 @@ class MainWindow(QMainWindow):
         )
         self._update_program_estimate()
         self.dashboard.progress.reset_idle()
+        self.dashboard.clear_history()
         self.diagnostics_tab.clear_activity()
-        self.engine.add_listener(self._on_engine_status)
-        self.engine.add_activity_listener(self._on_activity_line)
+        self.engine.add_listener(lambda st: self.engine_status.emit(st))
+        self.engine.add_activity_listener(lambda line: self.activity_line.emit(line))
         self.engine.start()
+        self._sync_run_buttons()
+        self.lbl_msg.setText("Run started…")
         self._log("Run started — Activity console je v Diagnostice")
+        self.statusBar().showMessage("Test běží", 3000)
 
     def _on_engine_status(self, st) -> None:
         if st.message:
             self.lbl_msg.setText(st.message)
         if st.activity_path:
             self.diagnostics_tab.set_activity_log_path(st.activity_path)
+        # Terminal states → re-enable Start
+        name = getattr(getattr(st, "run_state", None), "name", "") or getattr(st, "run_state", "")
+        if str(name).lower() in ("completed", "failed", "aborted", "idle"):
+            self._sync_run_buttons()
 
     def _on_activity_line(self, line: str) -> None:
         self.diagnostics_tab.append_activity(line)
 
     def _stop_run(self) -> None:
+        if not self._engine_is_alive():
+            return
         if self.engine:
             self.engine.abort()
+            self.lbl_msg.setText("Stop — EA off, čekám I≈0, pak stykače…")
+            self.statusBar().showMessage("Stop vyžádán", 5000)
             self._log("Stop — EA off first, contactors open only after I≈0")
+            self._sync_run_buttons()
 
     def _clear_bms_dtcs(self) -> None:
         if self._bms is None:
             QMessageBox.information(self, "Clear DTCs", "Connect HW first.")
             return
-        if not self._bms.is_healthy(2.0) and not isinstance(self._bms, MockBmsDriver):
+        if not self._bms.is_healthy(2.0):
             QMessageBox.warning(
                 self,
                 "Clear DTCs",
@@ -1494,23 +1933,38 @@ class MainWindow(QMainWindow):
                 step_type=st.current_step_type,
                 step_started_mono=st.step_started_mono,
                 run_started_mono=st.run_started_mono,
-                ea_charging=bool(ea and ea.psi_output_on),
-                ea_discharging=bool(ea and ea.el_input_on),
+                ea_charging=bool(ea and (ea.psi_output_on or abs(ea.psi_current_a) > 0.5)),
+                ea_discharging=bool(ea and (ea.el_input_on or abs(ea.el_current_a) > 0.5)),
             )
         elif bms is not None or ea is not None:
-            charging = bool(ea and ea.psi_output_on)
-            discharging = bool(ea and ea.el_input_on)
+            charging = bool(ea and (ea.psi_output_on or abs(ea.psi_current_a) > 0.5))
+            discharging = bool(ea and (ea.el_input_on or abs(ea.el_current_a) > 0.5))
+            ready = bool(bms and bms.operating_state == BmuState.READY)
             waiting = bool(
                 bms
                 and bms.operating_state in (BmuState.PRE_CHARGE, BmuState.READY)
                 and not charging
                 and not discharging
             )
+            amps = 0.0
+            if ea is not None:
+                amps = max(abs(float(ea.psi_current_a)), abs(float(ea.el_current_a)))
+            if bms is not None and bms.pack_current_a is not None:
+                amps = max(amps, abs(float(bms.pack_current_a)))
             self.dashboard.progress.set_preview_activity(
                 charging=charging,
                 discharging=discharging,
-                waiting=waiting,
+                waiting=waiting and not ready,
+                ready=ready and not charging and not discharging,
+                current_a=amps,
             )
+        self._sync_run_buttons()
+
+    def _open_runs_folder(self) -> None:
+        path = self.cfg.runs_path
+        path.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.resolve())))
+        self.statusBar().showMessage(f"Složka: {path}", 4000)
 
     def _refresh_history(self) -> None:
         self.history_list.clear()

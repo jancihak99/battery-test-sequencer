@@ -64,7 +64,7 @@ class PathsConfig:
 
 @dataclass
 class AppConfig:
-    use_mock_hardware: bool = True
+    use_mock_hardware: bool = False
     bms: BmsConfig = field(default_factory=BmsConfig)
     ea: EaConfig | None = None
     safety: SafetyConfig = field(default_factory=SafetyConfig)
@@ -127,7 +127,7 @@ def load_config(path: Path | None = None, root: Path | None = None) -> AppConfig
     safety = SafetyConfig(**{k: v for k, v in (raw.get("safety") or {}).items() if k in SafetyConfig.__dataclass_fields__})
     paths = PathsConfig(**{k: v for k, v in (raw.get("paths") or {}).items() if k in PathsConfig.__dataclass_fields__})
     return AppConfig(
-        use_mock_hardware=bool(raw.get("use_mock_hardware", True)),
+        use_mock_hardware=bool(raw.get("use_mock_hardware", False)),
         bms=bms,
         ea=ea,
         safety=safety,

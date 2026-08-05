@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 
 from bts.models.telemetry import BmsTelemetry, BmuState, EaTelemetry
 from bts.ui.activity import RunProgressPanel
+from bts.ui.live_history import CollapsibleLiveHistory
 from bts.ui.schematic import WiringSchematic
 from bts.ui.theme import ACCENT, BG_PANEL, BORDER, CHART_BG, OK, TEXT, TEXT_DIM
 
@@ -414,6 +415,10 @@ class LiveDashboard(QWidget):
         metrics.addWidget(self.tile_temp, 1)
         root.addWidget(Panel("Pack summary", self._wrap(metrics)))
 
+        # Live V/I history — collapsed by default so it doesn't crowd the glance layout
+        self.history = CollapsibleLiveHistory(expanded=False)
+        root.addWidget(self.history)
+
         self.cells = CellVoltageScale()
         root.addWidget(Panel("Cells · Vmin / Vmax vs limits", self.cells))
 
@@ -436,9 +441,27 @@ class LiveDashboard(QWidget):
             self.tile_pack.set_range(profile.pack_v_min, profile.pack_v_max)
             self.tile_temp.set_range(profile.t_min_c, profile.t_max_c)
             self.cells.set_data([], profile.cell_v_min, profile.cell_v_max)
+            self.history.set_v_range(profile.pack_v_min, profile.pack_v_max)
+            ah = float(profile.nominal_capacity_ah or 70.0)
+            self.schematic.set_capacity_ah(ah)
+            self.progress.set_capacity_ah(ah)
+
+    def clear_history(self) -> None:
+        self.history.clear()
 
     def update_live(self, bms: BmsTelemetry | None, ea: EaTelemetry | None) -> None:
         self.schematic.set_telemetry(bms, ea)
+        self.history.push(bms, ea)
+        amps = 0.0
+        if ea is not None and ea.connected:
+            amps = max(abs(float(ea.psi_current_a)), abs(float(ea.el_current_a)))
+        if bms is not None and bms.pack_current_a is not None:
+            amps = max(amps, abs(float(bms.pack_current_a)))
+        ready = bool(
+            bms is not None
+            and bms.operating_state == BmuState.READY
+        )
+        self.progress.set_live_current(amps, bmu_ready=ready)
         if bms is not None:
             self.tile_soc.set_value(bms.soc_pct)
             self.tile_pack.set_value(bms.pack_voltage_v)

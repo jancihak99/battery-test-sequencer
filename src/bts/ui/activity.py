@@ -5,7 +5,7 @@ import math
 import time
 from enum import Enum
 
-from PySide6.QtCore import QRectF, Qt, QTimer
+from PySide6.QtCore import QPointF, QRectF, Qt, QTimer
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
     QFrame,
@@ -21,36 +21,42 @@ from bts.engine.estimate import ProgramEstimate, format_duration
 from bts.engine.sequence import RunState
 from bts.ui.theme import ACCENT, BORDER, CHART_BG, OK, TEXT, TEXT_DIM
 
+# Full ring/power animation speed at 6C (matches schematic particle max).
+_MAX_C_RATE = 6.0
+
 
 class ActivityMode(str, Enum):
     IDLE = "idle"
     CHARGE = "charge"
     DISCHARGE = "discharge"
     WAIT = "wait"
+    READY = "ready"
     DONE = "done"
     ERROR = "error"
     ABORTED = "aborted"
 
 
 _MODE_LABEL = {
-    ActivityMode.IDLE: "Idle",
-    ActivityMode.CHARGE: "Charging",
-    ActivityMode.DISCHARGE: "Discharging",
-    ActivityMode.WAIT: "Waiting",
-    ActivityMode.DONE: "Completed",
-    ActivityMode.ERROR: "Failed",
-    ActivityMode.ABORTED: "Aborted",
+    ActivityMode.IDLE: "Nečinný",
+    ActivityMode.CHARGE: "Nabíjení",
+    ActivityMode.DISCHARGE: "Vybíjení",
+    ActivityMode.WAIT: "Čekání",
+    ActivityMode.READY: "READY",
+    ActivityMode.DONE: "Hotovo",
+    ActivityMode.ERROR: "Chyba",
+    ActivityMode.ABORTED: "Zastaveno",
 }
 
 
 class ActivityRing(QWidget):
-    """Small phone-style status ring: charge / discharge / idle / wait."""
+    """Status ring — charge/discharge speed scales with C-rate (max = 6C)."""
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        self.setFixedSize(52, 52)
+        self.setFixedSize(64, 64)
         self._mode = ActivityMode.IDLE
         self._phase = 0.0
+        self._crate_frac = 0.0  # 0…1 vs 6C
         self._timer = QTimer(self)
         self._timer.setInterval(33)
         self._timer.timeout.connect(self._tick)
@@ -61,19 +67,30 @@ class ActivityRing(QWidget):
             self._mode = mode
             self.update()
 
+    def set_crate_frac(self, frac: float) -> None:
+        """0 = no current-driven motion; 1.0 = 6C (previous full speed)."""
+        self._crate_frac = max(0.0, min(1.0, float(frac)))
+
     def mode(self) -> ActivityMode:
         return self._mode
 
     def _tick(self) -> None:
-        speed = {
-            ActivityMode.IDLE: 0.8,
-            ActivityMode.CHARGE: 2.4,
-            ActivityMode.DISCHARGE: 2.4,
-            ActivityMode.WAIT: 1.4,
-            ActivityMode.DONE: 0.0,
-            ActivityMode.ERROR: 1.8,
-            ActivityMode.ABORTED: 0.0,
-        }[self._mode]
+        mode = self._mode
+        if mode in (ActivityMode.CHARGE, ActivityMode.DISCHARGE):
+            # 6C → 2.4 (old full speed); 3C → 1.2; 0A → soft breathe only
+            speed = 2.4 * self._crate_frac
+            if speed < 0.02:
+                speed = 0.55
+        elif mode == ActivityMode.WAIT:
+            speed = 1.35
+        elif mode == ActivityMode.READY:
+            speed = 0.95
+        elif mode == ActivityMode.IDLE:
+            speed = 0.7
+        elif mode == ActivityMode.ERROR:
+            speed = 1.9
+        else:
+            speed = 0.0
         if speed > 0:
             self._phase = (self._phase + speed * 0.033) % (math.pi * 2)
             self.update()
@@ -82,18 +99,18 @@ class ActivityRing(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         cx, cy = self.width() / 2, self.height() / 2
-        r = 18.0
+        r = 22.0
         track = QRectF(cx - r, cy - r, 2 * r, 2 * r)
 
-        # Soft track
-        p.setPen(QPen(QColor("#dce3ea"), 3.5))
+        p.setPen(QPen(QColor("#dce3ea"), 4.0))
         p.setBrush(Qt.NoBrush)
         p.drawEllipse(track)
 
         mode = self._mode
+        frac = self._crate_frac
+
         if mode == ActivityMode.IDLE:
-            # Gentle breathe — short arc
-            alpha = int(90 + 80 * (0.5 + 0.5 * math.sin(self._phase)))
+            alpha = int(80 + 70 * (0.5 + 0.5 * math.sin(self._phase)))
             pen = QPen(QColor(ACCENT))
             pen.setWidthF(3.0)
             pen.setCapStyle(Qt.RoundCap)
@@ -101,43 +118,59 @@ class ActivityRing(QWidget):
             c.setAlpha(alpha)
             pen.setColor(c)
             p.setPen(pen)
-            start = int((-90 + math.degrees(self._phase * 0.3)) * 16)
-            p.drawArc(track, start, 70 * 16)
+            start = int((-90 + math.degrees(self._phase * 0.25)) * 16)
+            p.drawArc(track, start, 55 * 16)
             self._draw_dot(p, cx, cy, QColor("#9aabba"))
 
         elif mode == ActivityMode.CHARGE:
-            # Clockwise growing arc (phone charging feel)
             pen = QPen(QColor(OK))
-            pen.setWidthF(3.8)
+            pen.setWidthF(3.6 + 1.2 * frac)
             pen.setCapStyle(Qt.RoundCap)
             p.setPen(pen)
             start = int((-90 + math.degrees(self._phase)) * 16)
-            span = int((110 + 40 * math.sin(self._phase * 1.5)) * 16)
-            p.drawArc(track, -start, -span)  # clockwise via negative span
-            # Inner fill level pulse
-            fill = 0.35 + 0.25 * (0.5 + 0.5 * math.sin(self._phase * 0.7))
+            span = int((100 + 50 * frac + 30 * math.sin(self._phase * 1.4)) * 16)
+            p.drawArc(track, -start, -span)
+            fill = 0.32 + 0.28 * frac + 0.12 * (0.5 + 0.5 * math.sin(self._phase * 0.7))
             self._draw_battery(p, cx, cy, fill, QColor(OK), charging=True)
 
         elif mode == ActivityMode.DISCHARGE:
             pen = QPen(QColor("#c47a3a"))
-            pen.setWidthF(3.8)
+            pen.setWidthF(3.6 + 1.2 * frac)
             pen.setCapStyle(Qt.RoundCap)
             p.setPen(pen)
             start = int((-90 - math.degrees(self._phase)) * 16)
-            span = int((110 + 40 * math.sin(self._phase * 1.5)) * 16)
+            span = int((100 + 50 * frac + 30 * math.sin(self._phase * 1.4)) * 16)
             p.drawArc(track, start, -span)
-            fill = 0.65 - 0.25 * (0.5 + 0.5 * math.sin(self._phase * 0.7))
-            self._draw_battery(p, cx, cy, fill, QColor("#c47a3a"), charging=False)
+            fill = 0.72 - 0.28 * frac - 0.12 * (0.5 + 0.5 * math.sin(self._phase * 0.7))
+            self._draw_battery(p, cx, cy, max(0.12, fill), QColor("#c47a3a"), charging=False)
 
         elif mode == ActivityMode.WAIT:
             pen = QPen(QColor(ACCENT))
-            pen.setWidthF(3.2)
+            pen.setWidthF(3.4)
             pen.setCapStyle(Qt.RoundCap)
-            pen.setDashPattern([2.5, 3.2])
             p.setPen(pen)
-            start = int((-90 + math.degrees(self._phase)) * 16)
-            p.drawArc(track, -start, -280 * 16)
-            self._draw_dot(p, cx, cy, QColor(ACCENT))
+            for k in range(3):
+                ang = self._phase + k * (math.pi * 2 / 3)
+                start = int((-90 + math.degrees(ang)) * 16)
+                p.drawArc(track, -start, -42 * 16)
+            pulse = 0.55 + 0.45 * (0.5 + 0.5 * math.sin(self._phase * 1.2))
+            c = QColor(ACCENT)
+            c.setAlpha(int(90 + 100 * pulse))
+            p.setPen(Qt.NoPen)
+            p.setBrush(c)
+            p.drawEllipse(QPointF(cx, cy), 4.5, 4.5)
+
+        elif mode == ActivityMode.READY:
+            breath = 0.5 + 0.5 * math.sin(self._phase)
+            pen = QPen(QColor(OK))
+            pen.setWidthF(3.2 + breath)
+            pen.setCapStyle(Qt.RoundCap)
+            c = QColor(OK)
+            c.setAlpha(int(120 + 100 * breath))
+            pen.setColor(c)
+            p.setPen(pen)
+            p.drawEllipse(track)
+            self._draw_dot(p, cx, cy, QColor(OK))
 
         elif mode == ActivityMode.DONE:
             pen = QPen(QColor(OK))
@@ -145,9 +178,8 @@ class ActivityRing(QWidget):
             p.setPen(pen)
             p.drawEllipse(track)
             p.setPen(QPen(QColor(OK), 2.4))
-            # Checkmark
-            p.drawLine(int(cx - 6), int(cy + 1), int(cx - 1), int(cy + 6))
-            p.drawLine(int(cx - 1), int(cy + 6), int(cx + 8), int(cy - 6))
+            p.drawLine(int(cx - 7), int(cy + 1), int(cx - 1), int(cy + 7))
+            p.drawLine(int(cx - 1), int(cy + 7), int(cx + 9), int(cy - 6))
 
         elif mode == ActivityMode.ERROR:
             pulse = 0.55 + 0.45 * abs(math.sin(self._phase * 2))
@@ -223,7 +255,7 @@ class RunProgressPanel(QFrame):
             f" border-radius:8px; }}"
         )
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.setMinimumHeight(78)
+        self.setMinimumHeight(86)
 
         self._estimate: ProgramEstimate | None = None
         self._run_state = RunState.IDLE
@@ -235,6 +267,9 @@ class RunProgressPanel(QFrame):
         self._frozen_elapsed: float | None = None
         self._ea_charging = False
         self._ea_discharging = False
+        self._capacity_ah = 70.0
+        self._current_a = 0.0
+        self._bmu_ready = False
 
         root = QHBoxLayout(self)
         root.setContentsMargins(12, 10, 14, 10)
@@ -248,11 +283,11 @@ class RunProgressPanel(QFrame):
 
         top = QHBoxLayout()
         top.setSpacing(10)
-        self.lbl_mode = QLabel("Idle")
+        self.lbl_mode = QLabel("Nečinný")
         self.lbl_mode.setStyleSheet(
             f"color:{TEXT};font-size:14px;font-weight:700;"
         )
-        self.lbl_step = QLabel("No program running")
+        self.lbl_step = QLabel("Žádný běžící program")
         self.lbl_step.setStyleSheet(f"color:{TEXT_DIM};font-size:12px;")
         top.addWidget(self.lbl_mode, 0)
         top.addWidget(self.lbl_step, 1)
@@ -297,31 +332,58 @@ class RunProgressPanel(QFrame):
         self._refresh_static_estimate()
         self._paint_progress()
 
+    def set_capacity_ah(self, ah: float) -> None:
+        self._capacity_ah = max(1.0, float(ah))
+
+    def set_live_current(self, amps: float, *, bmu_ready: bool = False) -> None:
+        """Drive animation intensity from measured |I| (Ah → C-rate vs 6C max)."""
+        self._current_a = abs(float(amps))
+        self._bmu_ready = bool(bmu_ready)
+        cap = self._capacity_ah
+        frac = 0.0 if cap <= 0 else min(1.0, self._current_a / cap / _MAX_C_RATE)
+        self.ring.set_crate_frac(frac)
+        # Refresh labels when current changes during a run
+        if self._run_state == RunState.RUNNING:
+            self._update_activity()
+
     def set_preview_activity(
         self,
         *,
         charging: bool = False,
         discharging: bool = False,
         waiting: bool = False,
+        ready: bool = False,
+        current_a: float = 0.0,
         label: str | None = None,
     ) -> None:
-        """Drive the ring from Connect-time mock preview (no program running)."""
+        """Drive the ring when HW is connected but no program is running."""
         if self._run_state == RunState.RUNNING:
             return
+        self._current_a = abs(float(current_a))
+        cap = self._capacity_ah
+        frac = 0.0 if cap <= 0 else min(1.0, self._current_a / cap / _MAX_C_RATE)
+        self.ring.set_crate_frac(frac)
         if charging:
             mode = ActivityMode.CHARGE
         elif discharging:
             mode = ActivityMode.DISCHARGE
+        elif ready:
+            mode = ActivityMode.READY
         elif waiting:
             mode = ActivityMode.WAIT
         else:
             mode = ActivityMode.IDLE
         self.ring.set_mode(mode)
-        self.lbl_mode.setText(_MODE_LABEL[mode])
-        self.lbl_step.setText(label or "Mock preview · Connect again for another state")
+        mode_txt = _MODE_LABEL[mode]
+        if mode in (ActivityMode.CHARGE, ActivityMode.DISCHARGE) and self._current_a > 0.5:
+            crate = self._current_a / cap
+            mode_txt = f"{mode_txt} · {crate:.2f}C"
+        self.lbl_mode.setText(mode_txt)
+        self.lbl_step.setText(label or "HW připojeno · čekám na Start")
         chunk = {
             ActivityMode.CHARGE: OK,
             ActivityMode.DISCHARGE: "#c47a3a",
+            ActivityMode.READY: OK,
         }.get(mode, ACCENT)
         self.bar.setStyleSheet(
             f"QProgressBar {{ background:#ffffff; border:1px solid {BORDER};"
@@ -340,8 +402,9 @@ class RunProgressPanel(QFrame):
         self._ea_charging = False
         self._ea_discharging = False
         self.ring.set_mode(ActivityMode.IDLE)
-        self.lbl_mode.setText("Idle")
-        self.lbl_step.setText("No program running")
+        self.ring.set_crate_frac(0.0)
+        self.lbl_mode.setText("Nečinný")
+        self.lbl_step.setText("Žádný běžící program")
         self.lbl_pct.setText("")
         self.bar.setValue(0)
         self.lbl_elapsed.setText("0:00")
@@ -402,34 +465,44 @@ class RunProgressPanel(QFrame):
             mode = ActivityMode.ABORTED
         elif st != RunState.RUNNING:
             mode = ActivityMode.IDLE
-        elif self._ea_charging or self._step_type == "charge":
+        elif self._ea_charging:
             mode = ActivityMode.CHARGE
-        elif self._ea_discharging or self._step_type == "discharge":
+        elif self._ea_discharging:
             mode = ActivityMode.DISCHARGE
-        elif self._step_type in ("wait_temp", "wait_time", "bms_ready", "bms_idle", "dcir"):
+        elif self._step_type == "charge":
+            mode = ActivityMode.CHARGE
+        elif self._step_type == "discharge":
+            mode = ActivityMode.DISCHARGE
+        elif self._step_type == "bms_ready":
+            mode = ActivityMode.READY
+        elif self._step_type in ("wait_temp", "wait_time", "bms_idle", "dcir", "goto_soc"):
             mode = ActivityMode.WAIT
         else:
             mode = ActivityMode.WAIT if self._step_type else ActivityMode.IDLE
 
         self.ring.set_mode(mode)
-        self.lbl_mode.setText(_MODE_LABEL[mode])
+        mode_txt = _MODE_LABEL[mode]
+        if mode in (ActivityMode.CHARGE, ActivityMode.DISCHARGE) and self._current_a > 0.5:
+            crate = self._current_a / self._capacity_ah
+            mode_txt = f"{mode_txt} · {crate:.2f}C"
+        self.lbl_mode.setText(mode_txt)
 
         if st == RunState.RUNNING and self._step_id:
             n = len(self._estimate.steps) if self._estimate else "?"
             idx = self._step_index + 1 if self._step_index >= 0 else "?"
             typ = self._step_type or ""
-            self.lbl_step.setText(f"{self._step_id}  ·  {typ}  ·  step {idx}/{n}")
+            self.lbl_step.setText(f"{self._step_id}  ·  {typ}  ·  krok {idx}/{n}")
         elif st == RunState.COMPLETED:
-            self.lbl_step.setText("All steps finished")
+            self.lbl_step.setText("Všechny kroky dokončeny")
         elif st in (RunState.FAILED, RunState.ABORTED):
-            self.lbl_step.setText(self._step_id or "Stopped")
+            self.lbl_step.setText(self._step_id or "Zastaveno")
         else:
-            self.lbl_step.setText("No program running")
+            self.lbl_step.setText("Žádný běžící program")
 
-        # Chunk color by activity
         chunk = {
             ActivityMode.CHARGE: OK,
             ActivityMode.DISCHARGE: "#c47a3a",
+            ActivityMode.READY: OK,
             ActivityMode.DONE: OK,
             ActivityMode.ERROR: "#c0392b",
             ActivityMode.ABORTED: "#c47a3a",
