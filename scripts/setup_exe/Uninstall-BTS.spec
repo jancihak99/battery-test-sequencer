@@ -1,18 +1,13 @@
 # -*- mode: python ; coding: utf-8 -*-
-# Paths relative to this .spec (scripts/setup_exe/).
+# Standalone uninstaller shipped inside the app folder as "Uninstall BTS.exe"
 
 block_cipher = None
 
 a = Analysis(
-    ['bts_setup.py'],
+    ['uninstall_bts.py'],
     pathex=[],
     binaries=[],
-    datas=[
-        ('bts_app_icon.ico', '.'),
-        ('bts_payload.zip', '.'),
-        ('uninstall_bts.py', '.'),
-        ('Uninstall BTS.exe', '.'),
-    ],
+    datas=[],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
@@ -32,7 +27,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='BTS-Setup',
+    name='Uninstall BTS',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -46,6 +41,5 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon='bts_app_icon.ico',
-    version='file_version_info.txt',
     uac_admin=True,
 )

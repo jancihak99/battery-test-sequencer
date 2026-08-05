@@ -1,9 +1,13 @@
 """Classic wizard installer — embeds current BTS (no GitHub on first install).
 
+Default: C:\\Program Files\\EBZ\\BatteryTestSequencer (64-bit → Program Files).
+Requires Administrator. Ships Uninstall BTS.bat for complete removal.
+
 Build: scripts\\setup_exe\\build_setup_exe.bat
 """
 from __future__ import annotations
 
+import ctypes
 import os
 import queue
 import shutil
@@ -11,13 +15,46 @@ import subprocess
 import sys
 import threading
 import tkinter as tk
+import winreg
 import zipfile
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-DEFAULT_INSTALL = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "EBZ" / "BatteryTestSequencer"
 DEFAULT_REPO = "jancihak99/battery-test-sequencer"
 APP_TITLE = "Battery Test Sequencer"
+APP_PUBLISHER = "EBZ nano power"
+UNINSTALL_REG = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\EBZ_BatteryTestSequencer"
+
+
+def default_install_dir() -> Path:
+    """64-bit embeddable Python → Program Files (not x86)."""
+    pf = os.environ.get("ProgramW6432") or os.environ.get("ProgramFiles") or r"C:\Program Files"
+    return Path(pf) / "EBZ" / "BatteryTestSequencer"
+
+
+DEFAULT_INSTALL = default_install_dir()
+
+
+def _is_admin() -> bool:
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+def _ensure_admin_or_relaunch() -> bool:
+    """Relaunch with UAC if needed. Return True if this process should exit."""
+    if _is_admin() or "--elevated" in sys.argv or os.name != "nt":
+        return False
+    try:
+        extra = " ".join(f'"{a}"' for a in sys.argv[1:] if a != "--elevated")
+        params = (extra + ' --elevated').strip()
+        rc = ctypes.windll.shell32.ShellExecuteW(
+            None, "runas", sys.executable, params, None, 1
+        )
+        return int(rc) > 32
+    except Exception:
+        return False
 
 
 def _resource_path(name: str) -> Path:
@@ -58,26 +95,119 @@ def _payload_zip() -> Path:
     return p
 
 
+def _write_uninstaller(install_dir: Path, log) -> Path:
+    """Ship Uninstall BTS.exe (+ .bat fallback) into the install folder."""
+    src_py = _resource_path("uninstall_bts.py")
+    if not src_py.exists():
+        src_py = Path(__file__).resolve().parent / "uninstall_bts.py"
+    if src_py.exists():
+        shutil.copy2(src_py, install_dir / "uninstall_bts.py")
+
+    src_exe = _resource_path("Uninstall BTS.exe")
+    if not src_exe.exists():
+        src_exe = Path(__file__).resolve().parent / "Uninstall BTS.exe"
+
+    exe_dest = install_dir / "Uninstall BTS.exe"
+    if src_exe.exists():
+        shutil.copy2(src_exe, exe_dest)
+        log("Odinstalátor: Uninstall BTS.exe")
+        primary = exe_dest
+    else:
+        log("Varování: Uninstall BTS.exe chybí v Setup — použije se .bat")
+        primary = install_dir / "Uninstall BTS.bat"
+
+    bat = install_dir / "Uninstall BTS.bat"
+    bat.write_text(
+        "@echo off\n"
+        "setlocal\n"
+        'cd /d "%~dp0"\n'
+        'if exist "%~dp0Uninstall BTS.exe" (\n'
+        '  start "" "%~dp0Uninstall BTS.exe" %*\n'
+        "  exit /b 0\n"
+        ")\n"
+        'if exist "python\\pythonw.exe" (\n'
+        '  "python\\pythonw.exe" "%~dp0uninstall_bts.py" %*\n'
+        ") else if exist \"python\\python.exe\" (\n"
+        '  "python\\python.exe" "%~dp0uninstall_bts.py" %*\n'
+        ") else (\n"
+        "  echo Chybi odinstalator.\n"
+        "  pause\n"
+        "  exit /b 1\n"
+        ")\n",
+        encoding="utf-8",
+    )
+    return primary
+
+def _register_uninstall(install_dir: Path, uninstall_bat: Path, version: str) -> None:
+    """Apps & Features entry (requires admin / HKLM)."""
+    try:
+        key = winreg.CreateKeyEx(
+            winreg.HKEY_LOCAL_MACHINE,
+            UNINSTALL_REG,
+            0,
+            winreg.KEY_WRITE | winreg.KEY_WOW64_64KEY,
+        )
+        winreg.SetValueEx(key, "DisplayName", 0, winreg.REG_SZ, APP_TITLE)
+        winreg.SetValueEx(key, "Publisher", 0, winreg.REG_SZ, APP_PUBLISHER)
+        winreg.SetValueEx(key, "DisplayVersion", 0, winreg.REG_SZ, version)
+        winreg.SetValueEx(key, "InstallLocation", 0, winreg.REG_SZ, str(install_dir))
+        winreg.SetValueEx(key, "UninstallString", 0, winreg.REG_SZ, f'"{uninstall_bat}"')
+        winreg.SetValueEx(key, "QuietUninstallString", 0, winreg.REG_SZ, f'"{uninstall_bat}" --quiet')
+        winreg.SetValueEx(key, "NoModify", 0, winreg.REG_DWORD, 1)
+        winreg.SetValueEx(key, "NoRepair", 0, winreg.REG_DWORD, 1)
+        ico = install_dir / "assets" / "bts_app_icon.ico"
+        if ico.exists():
+            winreg.SetValueEx(key, "DisplayIcon", 0, winreg.REG_SZ, str(ico))
+        winreg.CloseKey(key)
+    except OSError:
+        # Fallback HKCU if HKLM denied
+        key = winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, UNINSTALL_REG, 0, winreg.KEY_WRITE)
+        winreg.SetValueEx(key, "DisplayName", 0, winreg.REG_SZ, APP_TITLE)
+        winreg.SetValueEx(key, "Publisher", 0, winreg.REG_SZ, APP_PUBLISHER)
+        winreg.SetValueEx(key, "DisplayVersion", 0, winreg.REG_SZ, version)
+        winreg.SetValueEx(key, "InstallLocation", 0, winreg.REG_SZ, str(install_dir))
+        winreg.SetValueEx(key, "UninstallString", 0, winreg.REG_SZ, f'"{uninstall_bat}"')
+        winreg.SetValueEx(key, "NoModify", 0, winreg.REG_DWORD, 1)
+        winreg.SetValueEx(key, "NoRepair", 0, winreg.REG_DWORD, 1)
+        winreg.CloseKey(key)
+
+
 def install_from_payload(install_dir: Path, log) -> None:
     """Extract bundled app + portable Python + wheels; offline pip install."""
     install_dir = install_dir.expanduser().resolve()
     payload = _payload_zip()
     log(f"Instalační balíček: {payload.name}")
-    install_dir.mkdir(parents=True, exist_ok=True)
+    log(f"Cíl: {install_dir}")
+    try:
+        install_dir.mkdir(parents=True, exist_ok=True)
+    except PermissionError as exc:
+        raise RuntimeError(
+            f"Nelze zapsat do {install_dir}.\n"
+            "Spusť BTS-Setup.exe jako správce (Program Files)."
+        ) from exc
 
-    # Keep lab config / runs / token across reinstall
     preserve = []
     for rel in ("config/default.yaml", ".github_token", "config/update.yaml"):
         src = install_dir / rel
         if src.exists():
             preserve.append((rel, src.read_bytes()))
 
-    # Clear old app/python (keep runs)
     for name in ("src", "assets", "profiles", "programs", "scripts", "docs", "python", "wheels"):
         p = install_dir / name
         if p.exists():
             shutil.rmtree(p, ignore_errors=True)
-    for name in ("main.py", "VERSION", "requirements.txt", "pyproject.toml", "Start BTS.bat", "Start BTS.vbs", "README.md"):
+    for name in (
+        "main.py",
+        "VERSION",
+        "requirements.txt",
+        "pyproject.toml",
+        "Start BTS.bat",
+        "Start BTS.vbs",
+        "README.md",
+        "Uninstall BTS.bat",
+        "Uninstall BTS.exe",
+        "uninstall_bts.py",
+    ):
         p = install_dir / name
         if p.is_file():
             p.unlink()
@@ -110,7 +240,6 @@ def install_from_payload(install_dir: Path, log) -> None:
 
     (install_dir / "runs").mkdir(parents=True, exist_ok=True)
 
-    # Fresh update config (repo known; no token required for first run)
     upd = install_dir / "config" / "update.yaml"
     upd.parent.mkdir(parents=True, exist_ok=True)
     if not upd.exists():
@@ -127,7 +256,6 @@ def install_from_payload(install_dir: Path, log) -> None:
         raise RuntimeError("V balíčku chybí přenosný Python.")
 
     log("Instaluji závislosti (offline ze zabudovaných wheels)…")
-    # Bootstrap pip if needed
     code, out = _run([str(py), "-c", "import pip"])
     if code != 0:
         get_pip = install_dir / "python" / "get-pip.py"
@@ -167,34 +295,32 @@ def install_from_payload(install_dir: Path, log) -> None:
     if code != 0:
         raise RuntimeError(f"pip install selhal:\n{out[-1200:]}")
 
-    # Editable-ish: ensure src on path via sitecustomize / .pth
     site = install_dir / "python" / "Lib" / "site-packages"
     site.mkdir(parents=True, exist_ok=True)
     (site / "bts_app.pth").write_text(str(install_dir / "src") + "\n", encoding="utf-8")
 
-    # Launcher using bundled pythonw
     pythonw = install_dir / "python" / "pythonw.exe"
     python_exe = install_dir / "python" / "python.exe"
     bat = install_dir / "Start BTS.bat"
     bat.write_text(
         "@echo off\n"
-        f'cd /d "%~dp0"\n'
-        f'if exist "python\\pythonw.exe" (\n'
-        f'  start "" "python\\pythonw.exe" "%~dp0main.py"\n'
-        f'  exit /b 0\n'
-        f')\n'
-        f'"python\\python.exe" "%~dp0main.py"\n'
-        f"if errorlevel 1 pause\n",
+        'cd /d "%~dp0"\n'
+        'if exist "python\\pythonw.exe" (\n'
+        '  start "" "python\\pythonw.exe" "%~dp0main.py"\n'
+        "  exit /b 0\n"
+        ")\n"
+        '"python\\python.exe" "%~dp0main.py"\n'
+        "if errorlevel 1 pause\n",
         encoding="utf-8",
     )
     vbs = install_dir / "Start BTS.vbs"
     vbs.write_text(
         'Set sh = CreateObject("WScript.Shell")\n'
         'Set fso = CreateObject("Scripting.FileSystemObject")\n'
-        'dir = fso.GetParentFolderName(WScript.ScriptFullName)\n'
-        'sh.CurrentDirectory = dir\n'
-        f'pyw = dir & "\\python\\pythonw.exe"\n'
-        'If fso.FileExists(pyw) Then\n'
+        "dir = fso.GetParentFolderName(WScript.ScriptFullName)\n"
+        "sh.CurrentDirectory = dir\n"
+        'pyw = dir & "\\python\\pythonw.exe"\n'
+        "If fso.FileExists(pyw) Then\n"
         '  sh.Run """" & pyw & """ """ & dir & "\\main.py""", 0, False\n'
         "Else\n"
         '  sh.Run """" & dir & "\\Start BTS.bat""", 1, False\n'
@@ -202,7 +328,15 @@ def install_from_payload(install_dir: Path, log) -> None:
         encoding="utf-8",
     )
 
-    # Shortcuts
+    uninstall_bat = _write_uninstaller(install_dir, log)
+
+    ver = "?"
+    vf = install_dir / "VERSION"
+    if vf.exists():
+        ver = vf.read_text(encoding="utf-8").strip()
+    _register_uninstall(install_dir, uninstall_bat, ver)
+    log("Záznam v Nastavení Windows → Aplikace OK")
+
     log("Vytvářím zástupce…")
     ico = install_dir / "assets" / "bts_app_icon.ico"
     if not ico.exists():
@@ -210,13 +344,17 @@ def install_from_payload(install_dir: Path, log) -> None:
     target = str(pythonw if pythonw.exists() else python_exe)
     args = f'"{install_dir / "main.py"}"'
     work = str(install_dir)
+    un_bat = str(uninstall_bat)
+    # Public Desktop + all-users Start Menu (ProgramData) when elevated
     ps = f"""
 $w = New-Object -ComObject WScript.Shell
+$desk = Join-Path $env:PUBLIC 'Desktop\\Battery Test Sequencer.lnk'
+$smDir = Join-Path $env:ProgramData 'Microsoft\\Windows\\Start Menu\\Programs\\EBZ'
+New-Item -ItemType Directory -Force -Path $smDir | Out-Null
 $paths = @(
-  (Join-Path ([Environment]::GetFolderPath('Desktop')) 'Battery Test Sequencer.lnk'),
-  (Join-Path $env:APPDATA 'Microsoft\\Windows\\Start Menu\\Programs\\EBZ\\Battery Test Sequencer.lnk')
+  $desk,
+  (Join-Path $smDir 'Battery Test Sequencer.lnk')
 )
-New-Item -ItemType Directory -Force -Path (Split-Path $paths[1]) | Out-Null
 foreach ($p in $paths) {{
   $l = $w.CreateShortcut($p)
   $l.TargetPath = '{target}'
@@ -226,17 +364,20 @@ foreach ($p in $paths) {{
   if (Test-Path '{ico}') {{ $l.IconLocation = '{ico}' }}
   $l.Save()
 }}
+$u = $w.CreateShortcut((Join-Path $smDir 'Uninstall Battery Test Sequencer.lnk'))
+$u.TargetPath = '{un_bat}'
+$u.WorkingDirectory = '{work}'
+$u.Description = 'Odinstalovat Battery Test Sequencer'
+if (Test-Path '{ico}') {{ $u.IconLocation = '{ico}' }}
+$u.Save()
 """
+    # un_bat may be .exe — quote already in path via str
     code, out = _run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps])
     if code != 0:
-        log("Varování: zástupce se nepodařil — použij Start BTS.bat")
+        log("Varování: zástupce se nepodařil — použij Start BTS.bat / Uninstall BTS.exe")
     else:
-        log("Zástupce na Ploše a ve Start menu OK")
+        log("Zástupce: Plocha + Start menu (+ Uninstall)")
 
-    ver = "?"
-    vf = install_dir / "VERSION"
-    if vf.exists():
-        ver = vf.read_text(encoding="utf-8").strip()
     log(f"Hotovo — BTS {ver} → {install_dir}")
 
 
@@ -244,8 +385,8 @@ class Wizard(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title(f"{APP_TITLE} — Setup")
-        self.geometry("640x420")
-        self.minsize(560, 380)
+        self.geometry("640x440")
+        self.minsize(560, 400)
         self.resizable(False, False)
         self._page = 0
         self._q: queue.Queue = queue.Queue()
@@ -267,7 +408,6 @@ class Wizard(tk.Tk):
         except Exception:
             pass
 
-        # Header banner
         self.header = tk.Frame(self, bg="#1a5f7a", height=72)
         self.header.pack(fill=tk.X)
         self.header.pack_propagate(False)
@@ -293,7 +433,6 @@ class Wizard(tk.Tk):
         self.body = tk.Frame(self, bg="#f0f0f0")
         self.body.pack(fill=tk.BOTH, expand=True, padx=24, pady=16)
 
-        # Pages
         self.pages: list[tk.Frame] = []
         self.pages.append(self._page_welcome())
         self.pages.append(self._page_folder())
@@ -302,7 +441,6 @@ class Wizard(tk.Tk):
         for p in self.pages:
             p.place(in_=self.body, x=0, y=0, relwidth=1, relheight=1)
 
-        # Footer buttons
         foot = tk.Frame(self, bg="#e8e8e8", height=52)
         foot.pack(fill=tk.X, side=tk.BOTTOM)
         foot.pack_propagate(False)
@@ -332,10 +470,11 @@ class Wizard(tk.Tk):
             f,
             text=(
                 "Tento průvodce nainstaluje Battery Test Sequencer na tento počítač.\n\n"
-                "• Není potřeba účet GitHub ani stahování při instalaci\n"
-                "• Aktuální verze je přímo v tomto instalátoru\n"
+                "• Výchozí složka: Program Files\\EBZ\\… (64bit aplikace)\n"
+                "• Vyžaduje oprávnění správce (UAC)\n"
+                "• Není potřeba účet GitHub při instalaci\n"
                 "• Aktualizace později apka stáhne sama z GitHubu\n"
-                "• Není potřeba oprávnění správce\n\n"
+                "• Odinstalace: Uninstall BTS.exe ve složce aplikace\n\n"
                 "Klikněte na Další pro pokračování."
             ),
             font=("Segoe UI", 10),
@@ -355,7 +494,7 @@ class Wizard(tk.Tk):
         ).pack(anchor="w", pady=(8, 12))
         tk.Label(
             f,
-            text="Aplikace se nainstaluje sem (doporučeno ponechat výchozí):",
+            text="Aplikace se nainstaluje sem (doporučeno ponechat Program Files):",
             bg="#f0f0f0",
             font=("Segoe UI", 10),
         ).pack(anchor="w")
@@ -365,11 +504,19 @@ class Wizard(tk.Tk):
         ttk.Button(row, text="Procházet…", command=self._browse).pack(side=tk.LEFT, padx=(8, 0))
         tk.Label(
             f,
-            text="Na Ploše a ve Start menu vznikne zástupce s ikonou aplikace.",
+            text="Zástupce na Ploše a ve Start menu. Odinstalace smaže vše včetně config/runs.",
             bg="#f0f0f0",
             font=("Segoe UI", 9),
             fg="#555",
         ).pack(anchor="w", pady=(8, 0))
+        if not _is_admin():
+            tk.Label(
+                f,
+                text="Upozornění: Setup neběží jako správce — zápis do Program Files může selhat.",
+                bg="#f0f0f0",
+                font=("Segoe UI", 9),
+                fg="#a04000",
+            ).pack(anchor="w", pady=(8, 0))
         return f
 
     def _page_progress(self) -> tk.Frame:
@@ -495,7 +642,8 @@ class Wizard(tk.Tk):
                     self.lbl_done.configure(
                         text=(
                             "Battery Test Sequencer byl úspěšně nainstalován.\n\n"
-                            f"Složka:\n{payload}"
+                            f"Složka:\n{payload}\n\n"
+                            "Odinstalace: Uninstall BTS.exe (nebo Start menu → Uninstall…)"
                         )
                     )
                     self._show(3)
@@ -528,13 +676,23 @@ class Wizard(tk.Tk):
 
 
 def main() -> int:
-    # Fail fast if payload missing (dev run without pack)
+    if _ensure_admin_or_relaunch():
+        return 0
     try:
         _payload_zip()
     except FileNotFoundError as exc:
         root = tk.Tk()
         root.withdraw()
         messagebox.showerror("BTS Setup", str(exc))
+        return 1
+    if not _is_admin():
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showwarning(
+            "BTS Setup",
+            "Instalace do Program Files vyžaduje oprávnění správce.\n"
+            "Spusť BTS-Setup.exe znovu a potvrď UAC.",
+        )
         return 1
     app = Wizard()
     app.mainloop()
