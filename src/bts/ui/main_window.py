@@ -7,7 +7,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QTimer, Qt, Signal, QUrl
+from PySide6.QtCore import QObject, QThread, QTimer, Qt, Signal, QUrl
 from PySide6.QtGui import QDesktopServices, QFont, QIcon, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -60,6 +60,34 @@ from bts.ui.theme import APP_STYLESHEET, TEXT_DIM
 log = logging.getLogger(__name__)
 
 
+class _UpdateCheckWorker(QObject):
+    """Runs GitHub update check off the GUI thread (avoids freeze on SSL/timeout)."""
+
+    finished = Signal(object)  # UpdateCheckResult
+
+    def __init__(self, root: Path) -> None:
+        super().__init__()
+        self._root = root
+
+    def run(self) -> None:
+        from bts.update import check_for_update
+
+        try:
+            self.finished.emit(check_for_update(self._root))
+        except Exception as exc:
+            from bts.update import UpdateCheckResult
+            from bts.version import read_version
+
+            self.finished.emit(
+                UpdateCheckResult(
+                    local_version=read_version(self._root),
+                    remote_version=None,
+                    update_available=False,
+                    error=str(exc),
+                )
+            )
+
+
 class MainWindow(QMainWindow):
     status_tick = Signal()
     # Cross-thread marshal from sequence engine → GUI thread
@@ -70,6 +98,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.cfg = cfg
         self._app_version = "0.0.0"
+        self._update_thread: QThread | None = None
+        self._pending_release = None
         self.setWindowTitle("Battery Test Sequencer | EBZ nano power")
         self.resize(1400, 860)
         self._apply_window_icon()
@@ -688,44 +718,113 @@ class MainWindow(QMainWindow):
             self.ed_github_token.setPlaceholderText("token uložen — apka kontroluje GitHub sama")
         self.lbl_update_status.setText("Update nastavení uloženo.")
 
-    def _check_updates(self) -> None:
-        from bts.update import check_for_update
+    def _start_update_check(self, *, interactive: bool) -> None:
+        """GitHub check on a worker thread — never block the UI on SSL/timeout."""
+        if self._update_thread is not None and self._update_thread.isRunning():
+            if hasattr(self, "lbl_update_status"):
+                self.lbl_update_status.setText("Kontrola už běží…")
+            return
+        if hasattr(self, "lbl_update_status"):
+            self.lbl_update_status.setText("Kontroluji GitHub…")
+        if interactive and hasattr(self, "btn_check_update"):
+            self.btn_check_update.setEnabled(False)
 
-        # Persist repo/token first if user typed them
+        thread = QThread(self)
+        worker = _UpdateCheckWorker(self.cfg.root)
+        worker.moveToThread(thread)
+        self._update_thread = thread
+        self._update_check_interactive = interactive
+
+        thread.started.connect(worker.run)
+
+        def _on_done(result: object) -> None:
+            try:
+                self._on_update_check_finished(result, interactive=interactive)
+            finally:
+                thread.quit()
+
+        worker.finished.connect(_on_done)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+
+        def _clear_thread() -> None:
+            if self._update_thread is thread:
+                self._update_thread = None
+            if hasattr(self, "btn_check_update"):
+                self.btn_check_update.setEnabled(True)
+
+        thread.finished.connect(_clear_thread)
+        thread.start()
+
+    def _check_updates(self) -> None:
         try:
             self._save_update_settings()
         except Exception:
             pass
-        self.lbl_update_status.setText("Kontroluji GitHub…")
-        QApplication.processEvents()
-        result = check_for_update(self.cfg.root)
+        self._start_update_check(interactive=True)
+
+    def _on_update_check_finished(self, result: object, *, interactive: bool) -> None:
+        from bts.update import UpdateCheckResult
+
+        if not isinstance(result, UpdateCheckResult):
+            return
         if result.error:
             self._pending_release = None
-            self.btn_apply_update.setEnabled(False)
-            self.lbl_update_status.setText(result.error)
-            QMessageBox.warning(self, "Aktualizace", result.error)
+            if hasattr(self, "btn_apply_update"):
+                self.btn_apply_update.setEnabled(False)
+            if hasattr(self, "lbl_update_status"):
+                # One-line status; full text in dialog when interactive
+                short = result.error.split("\n", 1)[0]
+                self.lbl_update_status.setText(short)
+            if interactive:
+                QMessageBox.warning(self, "Aktualizace", result.error)
+            else:
+                self._log(f"Update check: {result.error.splitlines()[0]}")
             return
         self._refresh_version_ui(result.local_version)
         if result.update_available and result.release:
             self._pending_release = result.release
-            self.btn_apply_update.setEnabled(True)
+            if hasattr(self, "btn_apply_update"):
+                self.btn_apply_update.setEnabled(True)
             msg = (
                 f"Na GitHubu je nová verze {result.remote_version} "
                 f"(tady máš {result.local_version})."
             )
-            self.lbl_update_status.setText(msg)
-            reply = QMessageBox.question(
-                self,
-                "Nová verze",
-                msg + "\n\nStáhnout a nainstalovat teď?",
-            )
-            if reply == QMessageBox.Yes:
-                self._apply_updates(confirm=False)
+            if hasattr(self, "lbl_update_status"):
+                self.lbl_update_status.setText(msg)
+            self._log(f"Update available: {result.remote_version}")
+            if interactive:
+                reply = QMessageBox.question(
+                    self,
+                    "Nová verze",
+                    msg + "\n\nStáhnout a nainstalovat teď?",
+                )
+                if reply == QMessageBox.Yes:
+                    self._apply_updates(confirm=False)
+            else:
+                from bts.update import load_update_config
+
+                ucfg = load_update_config(self.cfg.root)
+                if not ucfg.auto_prompt_install:
+                    return
+                if self._engine_is_alive():
+                    return
+                reply = QMessageBox.question(
+                    self,
+                    "Nová verze z GitHubu",
+                    msg + "\n\nStáhnout a nainstalovat teď?\n(config a runs zůstanou)",
+                )
+                if reply == QMessageBox.Yes:
+                    self._apply_updates(confirm=False)
         else:
             self._pending_release = None
-            self.btn_apply_update.setEnabled(False)
-            self.lbl_update_status.setText(result.message or "Žádná nová verze.")
-            QMessageBox.information(self, "Aktualizace", result.message or "Žádná nová verze.")
+            if hasattr(self, "btn_apply_update"):
+                self.btn_apply_update.setEnabled(False)
+            done = result.message or "Žádná nová verze."
+            if hasattr(self, "lbl_update_status"):
+                self.lbl_update_status.setText(done)
+            if interactive:
+                QMessageBox.information(self, "Aktualizace", done)
 
     def _apply_updates(self, *, confirm: bool = True) -> None:
         from bts.update import apply_best_update, spawn_external_updater
@@ -755,8 +854,11 @@ class MainWindow(QMainWindow):
             self._log("Update spuštěn — aplikace se zavře")
             QTimer.singleShot(400, QApplication.instance().quit)
         except Exception as exc:
-            # Fallback in-process
+            # Fallback in-process (can freeze UI — last resort)
             try:
+                if hasattr(self, "lbl_update_status"):
+                    self.lbl_update_status.setText("Stahuji update… (počkej)")
+                QApplication.processEvents()
                 msg = apply_best_update(self.cfg.root, self._pending_release)
                 QMessageBox.information(
                     self,
@@ -767,46 +869,16 @@ class MainWindow(QMainWindow):
                 QMessageBox.critical(self, "Aktualizace selhala", f"{exc}\n{exc2}")
 
     def _maybe_check_updates_on_startup(self) -> None:
-        """Customer PC: query GitHub Releases and offer install if newer."""
+        """Customer PC: query GitHub Releases in background; prompt if newer."""
         try:
-            from bts.update import check_for_update, load_update_config
+            from bts.update import load_update_config
 
             ucfg = load_update_config(self.cfg.root)
             if not ucfg.check_on_startup:
                 return
             if not hasattr(self, "lbl_update_status"):
                 return
-            self.lbl_update_status.setText("Kontroluji GitHub…")
-            QApplication.processEvents()
-            result = check_for_update(self.cfg.root)
-            if result.error:
-                self.lbl_update_status.setText(result.error)
-                return
-            self._refresh_version_ui(result.local_version)
-            if not (result.update_available and result.release and result.remote_version):
-                self.lbl_update_status.setText(result.message or f"Aktuální verze {result.local_version}")
-                return
-            self._pending_release = result.release
-            if hasattr(self, "btn_apply_update"):
-                self.btn_apply_update.setEnabled(True)
-            msg = (
-                f"Na GitHubu je nová verze {result.remote_version} "
-                f"(tady {result.local_version})."
-            )
-            self.lbl_update_status.setText(msg)
-            self._log(f"Update available: {result.remote_version}")
-            if not ucfg.auto_prompt_install:
-                return
-            # Don't interrupt an already-running sequence
-            if self.engine and getattr(self.engine, "_thread", None) and self.engine._thread.is_alive():
-                return
-            reply = QMessageBox.question(
-                self,
-                "Nová verze z GitHubu",
-                msg + "\n\nStáhnout a nainstalovat teď?\n(config a runs zůstanou)",
-            )
-            if reply == QMessageBox.Yes:
-                self._apply_updates(confirm=False)
+            self._start_update_check(interactive=False)
         except Exception:
             logging.getLogger(__name__).exception("Startup update check failed")
 

@@ -1,10 +1,11 @@
-"""GitHub-based auto-update for private Battery Test Sequencer installs."""
+"""GitHub-based auto-update for Battery Test Sequencer installs."""
 from __future__ import annotations
 
 import json
 import logging
 import os
 import shutil
+import ssl
 import subprocess
 import tempfile
 import urllib.error
@@ -117,7 +118,7 @@ def read_token(root: Path) -> str | None:
 
 
 def token_source(root: Path) -> str:
-    """Human-readable where the active token came from ( fore Settings)."""
+    """Human-readable where the active token came from (for Settings)."""
     env = os.environ.get("BTS_GITHUB_TOKEN") or os.environ.get("GITHUB_TOKEN")
     if env and env.strip():
         return "env"
@@ -133,19 +134,66 @@ def token_source(root: Path) -> str:
             return "vestavěný (release)"
     except Exception:
         pass
-    return "chybí"
+    return "chybí (public repo — OK)"
 
 
 def write_token(root: Path, token: str) -> Path:
     path = token_path(root)
     path.write_text(token.strip() + "\n", encoding="utf-8")
     try:
-        # Best-effort: hide from casual listing on Windows
         if os.name == "nt":
             subprocess.run(["attrib", "+H", str(path)], check=False, capture_output=True)
     except Exception:
         pass
     return path
+
+
+def _ssl_context() -> ssl.SSLContext:
+    """SSL for GitHub — embeddable Python often lacks CA bundle.
+
+    Prefer OS trust store (corporate proxies), then certifi, then default.
+    """
+    try:
+        import truststore  # type: ignore
+
+        ctx = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        log.debug("Update SSL: truststore (OS certificates)")
+        return ctx
+    except Exception:
+        pass
+    try:
+        import certifi
+
+        ctx = ssl.create_default_context(cafile=certifi.where())
+        log.debug("Update SSL: certifi %s", certifi.where())
+        return ctx
+    except Exception:
+        pass
+    return ssl.create_default_context()
+
+
+def _friendly_network_error(exc: BaseException) -> str:
+    text = str(exc)
+    low = text.lower()
+    if "certificate_verify_failed" in low or "unable to get local issuer" in low:
+        return (
+            "SSL certifikát — PC neumí ověřit GitHub (typické u firemní sítě / "
+            "starší instalace bez CA balíčku).\n\n"
+            "Zkuste: nainstalovat nový BTS-Setup.exe z GitHub Releases, "
+            "nebo IT musí povolit api.github.com.\n\n"
+            f"Detail: {text}"
+        )
+    if "timed out" in low or "timeout" in low:
+        return (
+            "Timeout při spojení s GitHubem — zkontrolujte internet / firewall.\n\n"
+            f"Detail: {text}"
+        )
+    if "name or service not known" in low or "getaddrinfo" in low or "nodename" in low:
+        return (
+            "DNS / síť — nelze najít api.github.com.\n\n"
+            f"Detail: {text}"
+        )
+    return text
 
 
 def _api_get(url: str, token: str | None) -> dict[str, Any]:
@@ -158,7 +206,7 @@ def _api_get(url: str, token: str | None) -> dict[str, Any]:
             **({"Authorization": f"Bearer {token}"} if token else {}),
         },
     )
-    with urllib.request.urlopen(req, timeout=30) as resp:
+    with urllib.request.urlopen(req, timeout=30, context=_ssl_context()) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
@@ -197,14 +245,14 @@ def check_for_update(root: Path) -> UpdateCheckResult:
             local_version=local,
             remote_version=None,
             update_available=False,
-            error=f"GitHub API error: {exc}",
+            error=_friendly_network_error(exc),
         )
     except Exception as exc:
         return UpdateCheckResult(
             local_version=local,
             remote_version=None,
             update_available=False,
-            error=str(exc),
+            error=_friendly_network_error(exc),
         )
 
     remote = rel.tag.lstrip("vV")
@@ -258,7 +306,7 @@ def _download(url: str, dest: Path, token: str | None) -> None:
             **({"Authorization": f"Bearer {token}"} if token else {}),
         },
     )
-    with urllib.request.urlopen(req, timeout=120) as resp, dest.open("wb") as out:
+    with urllib.request.urlopen(req, timeout=120, context=_ssl_context()) as resp, dest.open("wb") as out:
         shutil.copyfileobj(resp, out)
 
 
@@ -273,7 +321,6 @@ def _extract_zipball(zip_path: Path, root: Path) -> None:
         zf.extractall(tmp)
         src_root = tmp / top
         if not src_root.is_dir():
-            # Flat zip fallback
             src_root = tmp
         skip = {".venv", "runs", ".git", "__pycache__", ".github_token"}
         for item in src_root.iterdir():
@@ -291,7 +338,9 @@ def _extract_zipball(zip_path: Path, root: Path) -> None:
 def _pip_reinstall(root: Path) -> None:
     py = root / ".venv" / "Scripts" / "python.exe"
     if not py.exists():
-        py = Path(shutil.which("python") or "python")
+        # Offline Setup layout: python\python.exe next to main.py
+        embed = root / "python" / "python.exe"
+        py = embed if embed.exists() else Path(shutil.which("python") or "python")
     req = root / "requirements.txt"
     cmds = [
         [str(py), "-m", "pip", "install", "--upgrade", "pip"],
@@ -345,7 +394,7 @@ def apply_best_update(root: Path, release: ReleaseInfo | None = None) -> str:
 
 
 def spawn_external_updater(root: Path) -> Path:
-    """Write and launch a detached PowerShell updater so the GUI can exit."""
+    """Launch a detached PowerShell updater so the GUI can exit."""
     candidates = [
         root / "scripts" / "Update-BTS.ps1",
         root / "installer" / "Update-BTS.ps1",

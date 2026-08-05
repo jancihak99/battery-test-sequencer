@@ -2,3 +2,5 @@ PySide6>=6.6.0
 PyYAML>=6.0.1
 python-can==4.5.0
 pyserial>=3.5
+certifi>=2024.0.0
+truststore>=0.9.0
