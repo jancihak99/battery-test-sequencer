@@ -1,7 +1,7 @@
 """Step parameter form with fields shown/hidden by step type."""
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Any
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
@@ -28,6 +28,8 @@ class StepForm(QWidget):
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
+        self._capacity_ah = 70.0
+        self._syncing_current = False
         self._hint = QLabel("")
         self._hint.setWordWrap(True)
         self._hint.setStyleSheet("color:#555;")
@@ -52,13 +54,25 @@ class StepForm(QWidget):
         self.ed_current.setDecimals(1)
         self.ed_current.setSuffix(" A")
         self.ed_current.setValue(70)
+        self.ed_current.setToolTip("Proud v ampérech — vždy svázaný s C-rate přes Ah profilu.")
 
-        self.chk_use_crate = QCheckBox("Zadat jako C-rate (× Ah profilu)")
+        self.chk_use_crate = QCheckBox("V YAML uložit jako C-rate (ne absolutní A)")
+        self.chk_use_crate.setToolTip(
+            "C-rate a A jsou vždy propojené (I = C × Ah). "
+            "Zaškrtnuto = do souboru jde c_rate; vypnuto = current_a / pulse_a."
+        )
+        self.chk_use_crate.setChecked(True)
         self.ed_crate = QDoubleSpinBox()
         self.ed_crate.setRange(0.01, 20)
         self.ed_crate.setDecimals(2)
         self.ed_crate.setSuffix(" C")
         self.ed_crate.setValue(1.0)
+        self.ed_crate.setToolTip("C-rate — vždy svázaný s proudem (I = C × Ah profilu).")
+        self.ed_crate.valueChanged.connect(self._on_crate_changed)
+        self.ed_current.valueChanged.connect(self._on_current_changed)
+        self.lbl_crate_link = QLabel("")
+        self.lbl_crate_link.setStyleSheet("color:#666;font-size:11px;")
+        self._refresh_crate_link_label()
 
         self.ed_voltage = QDoubleSpinBox()
         self.ed_voltage.setRange(0.1, 100)
@@ -217,6 +231,7 @@ class StepForm(QWidget):
         add_row("use_crate", "", self.chk_use_crate)
         add_row("crate", "C-rate", self.ed_crate)
         add_row("current", "Current / pulse (A)", self.ed_current)
+        add_row("crate_link", "", self.lbl_crate_link)
         add_row("voltage", "Charge voltage", self.ed_voltage)
         add_row("pulse_s", "Pulse duration", self.ed_pulse_s)
         add_row("use_tmax", "", self.chk_use_tmax)
@@ -263,6 +278,70 @@ class StepForm(QWidget):
         layout.addStretch()
         self._on_type_changed(self.ed_step_type.currentText())
 
+    def set_capacity_ah(self, ah: float) -> None:
+        """Nominal Ah from active module profile — locks C-rate ↔ amps."""
+        ah = max(0.1, float(ah))
+        if abs(ah - self._capacity_ah) < 1e-9:
+            return
+        self._capacity_ah = ah
+        # Keep C as source of truth when capacity changes (YAML programs use c_rate).
+        self._syncing_current = True
+        try:
+            self.ed_current.setValue(round(self.ed_crate.value() * self._capacity_ah, 1))
+        finally:
+            self._syncing_current = False
+        self._refresh_crate_link_label()
+
+    def _refresh_crate_link_label(self) -> None:
+        ah = self._capacity_ah
+        self.lbl_crate_link.setText(
+            f"Propojeno: I = C × {ah:.0f} Ah  ·  "
+            f"{self.ed_crate.value():.2f}C = {self.ed_current.value():.1f} A"
+        )
+
+    def _on_crate_changed(self, value: float) -> None:
+        if self._syncing_current:
+            return
+        self._syncing_current = True
+        try:
+            self.ed_current.setValue(round(float(value) * self._capacity_ah, 1))
+        finally:
+            self._syncing_current = False
+        self._refresh_crate_link_label()
+
+    def _on_current_changed(self, value: float) -> None:
+        if self._syncing_current:
+            return
+        self._syncing_current = True
+        try:
+            self.ed_crate.setValue(round(float(value) / self._capacity_ah, 2))
+        finally:
+            self._syncing_current = False
+        self._refresh_crate_link_label()
+
+    def _set_linked_current(self, *, crate: float | None = None, amps: float | None = None) -> None:
+        """Load both fields from one known value without feedback loops."""
+        self._syncing_current = True
+        try:
+            if crate is not None:
+                c = max(0.01, float(crate))
+                self.ed_crate.setValue(c)
+                self.ed_current.setValue(round(c * self._capacity_ah, 1))
+            elif amps is not None:
+                a = max(0.1, float(amps))
+                self.ed_current.setValue(a)
+                self.ed_crate.setValue(round(a / self._capacity_ah, 2))
+        finally:
+            self._syncing_current = False
+        self._refresh_crate_link_label()
+
+    def _put_current_params(self, p: dict[str, Any], *, amp_key: str = "current_a") -> None:
+        """Write either c_rate or absolute amps (UI fields stay linked either way)."""
+        if self.chk_use_crate.isChecked():
+            p["c_rate"] = float(self.ed_crate.value())
+        else:
+            p[amp_key] = float(self.ed_current.value())
+
     def _show(self, *keys: str) -> None:
         show = set(keys) | {"id", "type"}
         for key, (lab, wid) in self._row_widgets.items():
@@ -297,6 +376,7 @@ class StepForm(QWidget):
                 "use_crate",
                 "crate",
                 "current",
+                "crate_link",
                 "voltage",
                 "timeout",
                 "stop_soc",
@@ -314,6 +394,7 @@ class StepForm(QWidget):
                 "use_crate",
                 "crate",
                 "current",
+                "crate_link",
                 "voltage",
                 "timeout",
                 "stop_pack_vmax",
@@ -338,6 +419,7 @@ class StepForm(QWidget):
                 "use_crate",
                 "crate",
                 "current",
+                "crate_link",
                 "timeout",
                 "stop_pack_vmin",
                 "pack_vmin",
@@ -361,6 +443,7 @@ class StepForm(QWidget):
                 "use_crate",
                 "crate",
                 "current",
+                "crate_link",
                 "pulse_s",
                 "soc_ref_chk",
                 "soc_ref",
@@ -396,10 +479,13 @@ class StepForm(QWidget):
 
         self.ed_seconds.setValue(int(p.get("seconds") or p.get("timeout_s") or 60))
         self.ed_timeout.setValue(int(p.get("timeout_s") or stop.get("timeout_s") or 60))
-        self.chk_use_crate.setChecked("c_rate" in p)
-        if "c_rate" in p:
-            self.ed_crate.setValue(float(p["c_rate"]))
-        self.ed_current.setValue(float(p.get("current_a") or p.get("pulse_a") or 70))
+        has_crate = "c_rate" in p and p.get("c_rate") is not None and str(p.get("c_rate")).strip() != ""
+        self.chk_use_crate.setChecked(has_crate or ("current_a" not in p and "pulse_a" not in p))
+        if has_crate:
+            self._set_linked_current(crate=float(p["c_rate"]))
+        else:
+            amps = p.get("current_a") if p.get("current_a") is not None else p.get("pulse_a")
+            self._set_linked_current(amps=float(amps) if amps is not None else self._capacity_ah)
         self.ed_voltage.setValue(float(p.get("voltage_v") or 27.5))
         self.ed_pulse_s.setValue(float(p.get("pulse_s") or 10))
 
@@ -499,10 +585,7 @@ class StepForm(QWidget):
                 p["t_min_c"] = float(self.ed_tmin.value())
             p["timeout_s"] = int(self.ed_timeout.value())
         elif stype == "goto_soc":
-            if self.chk_use_crate.isChecked():
-                p["c_rate"] = float(self.ed_crate.value())
-            else:
-                p["current_a"] = float(self.ed_current.value())
+            self._put_current_params(p, amp_key="current_a")
             p["voltage_v"] = float(self.ed_voltage.value())
             p["timeout_s"] = int(self.ed_timeout.value())
             p["soc_pct"] = float(self.ed_soc.value())
@@ -517,10 +600,7 @@ class StepForm(QWidget):
             if abort:
                 p["abort"] = abort
         elif stype == "charge":
-            if self.chk_use_crate.isChecked():
-                p["c_rate"] = float(self.ed_crate.value())
-            else:
-                p["current_a"] = float(self.ed_current.value())
+            self._put_current_params(p, amp_key="current_a")
             p["voltage_v"] = float(self.ed_voltage.value())
             p["timeout_s"] = int(self.ed_timeout.value())
             p["respect_bmu_limits"] = bool(self.chk_respect_bmu.isChecked())
@@ -546,10 +626,7 @@ class StepForm(QWidget):
             if abort:
                 p["abort"] = abort
         elif stype == "discharge":
-            if self.chk_use_crate.isChecked():
-                p["c_rate"] = float(self.ed_crate.value())
-            else:
-                p["current_a"] = float(self.ed_current.value())
+            self._put_current_params(p, amp_key="current_a")
             p["timeout_s"] = int(self.ed_timeout.value())
             p["respect_bmu_limits"] = bool(self.chk_respect_bmu.isChecked())
             if self.chk_record.isChecked() or self.ed_measure_cap.isChecked():
@@ -575,10 +652,7 @@ class StepForm(QWidget):
                 key = self.ed_measure_key.text().strip() or "capacity_ah"
                 p["measure"] = key
         elif stype == "dcir":
-            if self.chk_use_crate.isChecked():
-                p["c_rate"] = float(self.ed_crate.value())
-            else:
-                p["pulse_a"] = float(self.ed_current.value())
+            self._put_current_params(p, amp_key="pulse_a")
             p["pulse_s"] = float(self.ed_pulse_s.value())
             p["respect_bmu_limits"] = bool(self.chk_respect_bmu.isChecked())
             if self.chk_record.isChecked():

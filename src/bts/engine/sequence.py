@@ -30,9 +30,9 @@ _SOFT_ABORT_CONFIRM_S_DTC = 1.0
 _BMU_CURRENT_MARGIN = 0.97  # keep small headroom below BMU command limits
 
 # Cell voltage safety margins (applied to profile limits).
-# Stop triggers first (bigger margin); abort is the hard safety net.
-_CELL_V_STOP_MARGIN  = 0.030  # V — stop step 30 mV inside profile limit
-_CELL_V_ABORT_MARGIN = 0.010  # V — hard abort 10 mV inside profile limit
+# Soft stop can sit inside the profile; hard abort is at the profile ceiling
+# (comparison is strict > / <) so CV (i_min_a) can ride at Vmax without FAIL.
+_CELL_V_STOP_MARGIN = 0.030  # V — auto stop 30 mV inside profile when stop omits cell V
 _CURRENT_GATE_WAIT_S = 8.0
 _CURRENT_GATE_OK_A = 0.5
 _I_MIN_HOLD_S = 5.0  # CV end-current must stay ≤ i_min_a this long
@@ -509,16 +509,26 @@ class SequenceEngine:
             return f"Tmin {b.t_min_c:.1f} C < {abort['t_min_c']}"
         return None
 
-    def _effective_abort(self, step_abort: dict[str, Any] | None) -> dict[str, Any]:
-        """Merge program-level t_max_c and profile cell V hard limits."""
+    def _effective_abort(
+        self,
+        step_abort: dict[str, Any] | None,
+        *,
+        stop: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Merge program-level t_max_c and profile cell V hard limits.
+
+        Abort trips with strict > / < on profile cell limits. An inward margin
+        here used to FAIL CV charges (i_min_a disables cell V stop) at 2.74 V
+        while the step was intentionally riding toward 2.75 V.
+        """
         abort = dict(step_abort or {})
         prog_tmax = getattr(self.program.meta, "t_max_c", None)
         if prog_tmax is not None and "t_max_c" not in abort:
             abort["t_max_c"] = float(prog_tmax)
-        # Hard safety net: cell voltage abort from profile (with tiny margin).
-        # User-defined values are respected if tighter; profile limit is the ceiling.
-        prof_cell_max = self.profile.cell_v_max - _CELL_V_ABORT_MARGIN
-        prof_cell_min = self.profile.cell_v_min + _CELL_V_ABORT_MARGIN
+        # Hard safety net at profile absolute limits (not inside them).
+        # User may set tighter; never looser than profile.
+        prof_cell_max = float(self.profile.cell_v_max)
+        prof_cell_min = float(self.profile.cell_v_min)
         if "cell_v_max" not in abort:
             abort["cell_v_max"] = prof_cell_max
         else:
@@ -527,6 +537,20 @@ class SequenceEngine:
             abort["cell_v_min"] = prof_cell_min
         else:
             abort["cell_v_min"] = max(float(abort["cell_v_min"]), prof_cell_min)
+        # Never abort inside a soft stop the step is allowed to reach
+        # (stop uses >= / <=; abort uses > / < — equal limits are OK).
+        # Still never looser than the profile absolute limit.
+        stop = stop or {}
+        if "cell_v_max" in stop and "cell_v_max" in abort:
+            abort["cell_v_max"] = min(
+                max(float(abort["cell_v_max"]), float(stop["cell_v_max"])),
+                prof_cell_max,
+            )
+        if "cell_v_min" in stop and "cell_v_min" in abort:
+            abort["cell_v_min"] = max(
+                min(float(abort["cell_v_min"]), float(stop["cell_v_min"])),
+                prof_cell_min,
+            )
         return abort
 
     def _check_abort_conditions(
@@ -706,6 +730,7 @@ class SequenceEngine:
         if et.psi_output_on and et.el_input_on:
             self.ea.all_off()
             raise RuntimeError("EA mutex violation: PSI and EL both reported ON")
+        self._cache_ea(et)
         self._check_power_path_integrity(et, tel)
 
     def _reset_ext_fail(self) -> None:
@@ -1130,13 +1155,20 @@ class SequenceEngine:
                 )
                 self._set_msg(f"Po stykačích: čekám {settle_s:.0f}s…")
                 t0 = time.monotonic()
+                last_left_i = -1
                 while time.monotonic() - t0 < settle_s:
                     if self._abort.is_set():
                         raise RuntimeError("Aborted")
                     self._check_watchdog(require_ea=False)
                     self._sample_log()
                     left = settle_s - (time.monotonic() - t0)
-                    self._set_msg(f"Po stykačích: čekám {max(0.0, left):.0f}s…")
+                    left_i = int(max(0.0, left))
+                    if left_i != last_left_i:
+                        last_left_i = left_i
+                        # Status only — avoid flooding activity log / UI every poll
+                        with self._lock:
+                            self._status.message = f"Po stykačích: čekám {left_i}s…"
+                        self._emit()
                     time.sleep(self.poll_period_s)
                 self._event("bms_ready: settle done — pokračuji")
 
@@ -1187,12 +1219,18 @@ class SequenceEngine:
                     self._event(
                         f"goto_soc: SOC {soc:.1f}% < {target:.0f}% → charge"
                     )
+                    with self._lock:
+                        self._status.current_step_type = "charge"
                     self._run_step(Step(id=f"{step.id}_chg", type="charge", params=sub_p))
                 else:
                     self._event(
                         f"goto_soc: SOC {soc:.1f}% > {target:.0f}% → discharge"
                     )
+                    with self._lock:
+                        self._status.current_step_type = "discharge"
                     self._run_step(Step(id=f"{step.id}_dch", type="discharge", params=sub_p))
+                with self._lock:
+                    self._status.current_step_type = "goto_soc"
 
         elif t == "charge":
             self._require_ready()
@@ -1214,7 +1252,6 @@ class SequenceEngine:
                 )
                 voltage = self.profile.pack_v_max
             stop = dict(p.get("stop") or {})
-            abort = self._effective_abort(p.get("abort"))
             # Fill missing pack stop from temperature-aware profile cutoffs.
             # With i_min_a (CV), pack_v_max is informational for logs / near-V — step ends on i_min.
             t_now = self.bms.telemetry().t_max_c
@@ -1226,12 +1263,14 @@ class SequenceEngine:
                     + (" — CV via i_min_a, Vmax alone does not end step" if "i_min_a" in stop else "")
                 )
             # Cell voltage stop — safety net from profile, stops before BMU disconnect.
-            if "cell_v_max" not in stop:
+            # Skipped for CV (i_min_a): soft stop on cell Vmax would end CV early; abort is at profile.
+            if "cell_v_max" not in stop and "i_min_a" not in stop:
                 stop["cell_v_max"] = self.profile.cell_v_max - _CELL_V_STOP_MARGIN
                 self._event(
                     f"charge: auto cell_v_max stop = {stop['cell_v_max']:.3f}V "
                     f"(profile {self.profile.cell_v_max:.3f}V − {_CELL_V_STOP_MARGIN*1000:.0f}mV margin)"
                 )
+            abort = self._effective_abort(p.get("abort"), stop=stop)
             timeout = float(stop.get("timeout_s", p.get("timeout_s", 8 * 3600)))
             self._mark_ah_start()
             integrated_ah = 0.0
@@ -1321,7 +1360,6 @@ class SequenceEngine:
             self._bmu_mode_active = "discharge"
             current = self._cap_current_to_bmu(current, p, mode="discharge")
             stop = dict(p.get("stop") or {})
-            abort = self._effective_abort(p.get("abort"))
             timeout = float(stop.get("timeout_s", p.get("timeout_s", 8 * 3600)))
             t_now = self.bms.telemetry().t_max_c
             if "pack_v_min" not in stop:
@@ -1336,6 +1374,7 @@ class SequenceEngine:
                     f"discharge: auto cell_v_min stop = {stop['cell_v_min']:.3f}V "
                     f"(profile {self.profile.cell_v_min:.3f}V + {_CELL_V_STOP_MARGIN*1000:.0f}mV margin)"
                 )
+            abort = self._effective_abort(p.get("abort"), stop=stop)
             vlim = float(stop.get("pack_v_min", self.profile.pack_v_min))
             pack_v = self.bms.telemetry().pack_voltage_v
             op_v = float(pack_v) if pack_v and pack_v > 0 else float(self.profile.pack_v_max)
@@ -1443,7 +1482,7 @@ class SequenceEngine:
             self._bmu_mode_active = "discharge"
             pulse_a = self._cap_current_to_bmu(pulse_a, p, mode="discharge")
             pulse_s = float(p.get("pulse_s", self.profile.dcir_pulse_s))
-            abort = self._effective_abort(p.get("abort"))
+            abort = self._effective_abort(p.get("abort"), stop=p.get("stop"))
             soc_ref = p.get("soc_ref_pct")
             if soc_ref is not None:
                 target = float(soc_ref)

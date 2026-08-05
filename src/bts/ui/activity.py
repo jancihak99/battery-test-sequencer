@@ -271,6 +271,11 @@ class RunProgressPanel(QFrame):
         self._current_a = 0.0
         self._bmu_ready = False
 
+        # Keep elapsed / progress moving even if live poll stalls briefly
+        self._tick = QTimer(self)
+        self._tick.setInterval(250)
+        self._tick.timeout.connect(self._paint_progress)
+
         root = QHBoxLayout(self)
         root.setContentsMargins(12, 10, 14, 10)
         root.setSpacing(14)
@@ -401,6 +406,7 @@ class RunProgressPanel(QFrame):
         self._frozen_elapsed = None
         self._ea_charging = False
         self._ea_discharging = False
+        self._tick.stop()
         self.ring.set_mode(ActivityMode.IDLE)
         self.ring.set_crate_frac(0.0)
         self.lbl_mode.setText("Nečinný")
@@ -445,13 +451,17 @@ class RunProgressPanel(QFrame):
         self._ea_discharging = ea_discharging
         if run_state == RunState.RUNNING:
             self._frozen_elapsed = None
-        elif (
-            run_state
-            in (RunState.COMPLETED, RunState.FAILED, RunState.ABORTED)
-            and self._frozen_elapsed is None
-            and run_started_mono is not None
-        ):
-            self._frozen_elapsed = max(0.0, time.monotonic() - run_started_mono)
+            if not self._tick.isActive():
+                self._tick.start()
+        else:
+            self._tick.stop()
+            if (
+                run_state
+                in (RunState.COMPLETED, RunState.FAILED, RunState.ABORTED)
+                and self._frozen_elapsed is None
+                and run_started_mono is not None
+            ):
+                self._frozen_elapsed = max(0.0, time.monotonic() - run_started_mono)
         self._update_activity()
         self._paint_progress()
 
@@ -568,8 +578,10 @@ class RunProgressPanel(QFrame):
         done = est.completed_seconds(idx)
         step_est = est.steps[idx].seconds if idx < len(est.steps) else 1.0
         if self._step_started_mono is not None and step_est > 0:
+            # Cap at end of this step's share while overrunning estimate —
+            # elapsed / Left still move; bar must not look frozen mid-step.
             in_step = (now - self._step_started_mono) / step_est
-            in_step = max(0.0, min(0.97, in_step))  # don't claim step done early
+            in_step = max(0.0, min(1.0, in_step))
         else:
             in_step = 0.0
         progress_s = done + in_step * step_est

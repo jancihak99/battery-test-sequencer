@@ -3,8 +3,8 @@ meta:
   module_profile: LTO_24V_70Ah
   description: >
     Precondition 50% SOC (any start) → DCIR 5C/10s → full CV 3C (i_min) →
-    capacity 1C → full CV 3C → capacity 3C → charge to 30% SOC. Program Tmax 50°C.
-  t_max_c: 50
+    capacity 1C → full CV 3C → capacity 3C → charge to 30% SOC. Program Tmax 60°C.
+  t_max_c: 60
 
 steps:
   - id: ready

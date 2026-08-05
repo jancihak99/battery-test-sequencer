@@ -40,6 +40,7 @@ from bts.dtc_catalog import format_active_dtcs, format_dtc_detail
 from bts.engine import SequenceEngine, estimate_program, validate_program
 from bts.engine.sequence import CONTACTOR_SAFE_JOIN_S
 from bts.models.config import AppConfig, load_config, save_bms_settings
+from bts.models.current import format_amps_with_crate, resolve_amps
 from bts.models.program import (
     Program,
     ProgramMeta,
@@ -382,6 +383,7 @@ class MainWindow(QMainWindow):
         self.ed_name = QLineEdit()
         self.ed_profile = QComboBox()
         self.ed_profile.setToolTip("Battery module profile for the whole program (all steps).")
+        self.ed_profile.currentTextChanged.connect(self._on_editor_profile_changed)
         self.ed_desc = QLineEdit()
         self.ed_prog_tmax = QDoubleSpinBox()
         self.ed_prog_tmax.setRange(0, 100)
@@ -1117,10 +1119,44 @@ class MainWindow(QMainWindow):
                 self.cfg.profiles_path / f"{self.program.meta.module_profile}.yaml"
             )
             self.dashboard.set_profile(self._active_profile)
+            self._apply_profile_capacity_to_form()
         except Exception:
             self._active_profile = None
         self._update_program_estimate()
         self._sync_editor_from_program()
+
+    def _apply_profile_capacity_to_form(self) -> None:
+        prof = self._active_profile
+        ah = 70.0
+        if prof is not None:
+            ah = float(
+                getattr(prof, "nominal_capacity_ah", None)
+                or getattr(prof, "typical_capacity_ah", None)
+                or 70.0
+            )
+        self.step_form.set_capacity_ah(ah)
+
+    def _on_editor_profile_changed(self, name: str) -> None:
+        """Keep C↔A link using Ah of the profile selected in the editor."""
+        if not name:
+            return
+        try:
+            self._active_profile = load_profile(self.cfg.profiles_path / f"{name}.yaml")
+            self.dashboard.set_profile(self._active_profile)
+            self._apply_profile_capacity_to_form()
+            self._update_program_estimate()
+            # Refresh step list summaries (C/A text depends on profile Ah)
+            if self.program:
+                row = self.step_list.currentRow()
+                self.step_list.blockSignals(True)
+                for i, s in enumerate(self.program.steps):
+                    if i < self.step_list.count():
+                        self.step_list.item(i).setText(self._step_summary(s))
+                self.step_list.blockSignals(False)
+                if row >= 0:
+                    self.step_list.setCurrentRow(row)
+        except Exception:
+            logging.getLogger(__name__).exception("Editor profile change failed")
 
     def _update_program_estimate(self) -> None:
         if not self.program:
@@ -1150,15 +1186,41 @@ class MainWindow(QMainWindow):
         if self.program.steps:
             self.step_list.setCurrentRow(0)
 
-    @staticmethod
-    def _step_summary(s: Step) -> str:
+    def _step_summary(self, s: Step) -> str:
         extra = ""
         if s.type == "wait_time":
             extra = f" {s.params.get('seconds', '?')}s"
-        elif s.type in ("charge", "discharge"):
-            extra = f" {s.params.get('current_a', '?')}A"
-        elif s.type == "dcir":
-            extra = f" {s.params.get('pulse_a', '?')}A/{s.params.get('pulse_s', '?')}s"
+        elif s.type in ("charge", "discharge", "goto_soc", "dcir"):
+            try:
+                amp_key = "pulse_a" if s.type == "dcir" else "current_a"
+                default = 70.0
+                if self._active_profile is not None:
+                    default = float(
+                        self._active_profile.dcir_pulse_a
+                        if s.type == "dcir"
+                        else self._active_profile.default_test_current_a
+                    )
+                if self._active_profile is not None:
+                    amps = resolve_amps(
+                        s.params,
+                        self._active_profile,
+                        amp_key=amp_key,
+                        default=default,
+                    )
+                    extra = f" {format_amps_with_crate(amps, self._active_profile)}"
+                else:
+                    crate = s.params.get("c_rate")
+                    amps = s.params.get(amp_key)
+                    if crate is not None:
+                        extra = f" {float(crate):.2f}C"
+                    elif amps is not None:
+                        extra = f" {float(amps):.0f}A"
+                    else:
+                        extra = " ?"
+                if s.type == "dcir":
+                    extra += f"/{s.params.get('pulse_s', '?')}s"
+            except Exception:
+                extra = " ?"
         return f"{s.id}  [{s.type}]{extra}"
 
     def _commit_editor_row(self, row: int) -> None:
@@ -2015,6 +2077,15 @@ class MainWindow(QMainWindow):
             self.lbl_dcir.setText(
                 f"{st.measurements.dcir_mohm:.3f} mΩ" if st.measurements.dcir_mohm is not None else "—"
             )
+            ea_charging = bool(ea and (ea.psi_output_on or abs(ea.psi_current_a) > 0.5))
+            ea_discharging = bool(ea and (ea.el_input_on or abs(ea.el_current_a) > 0.5))
+            # Fallback: BMU pack current (charge +, discharge −) when EA cache is stale
+            if bms is not None and bms.pack_current_a is not None:
+                pi = float(bms.pack_current_a)
+                if pi > 0.5:
+                    ea_charging = True
+                elif pi < -0.5:
+                    ea_discharging = True
             self.dashboard.progress.update_run(
                 run_state=st.run_state,
                 step_index=st.current_step_index,
@@ -2022,8 +2093,8 @@ class MainWindow(QMainWindow):
                 step_type=st.current_step_type,
                 step_started_mono=st.step_started_mono,
                 run_started_mono=st.run_started_mono,
-                ea_charging=bool(ea and (ea.psi_output_on or abs(ea.psi_current_a) > 0.5)),
-                ea_discharging=bool(ea and (ea.el_input_on or abs(ea.el_current_a) > 0.5)),
+                ea_charging=ea_charging,
+                ea_discharging=ea_discharging,
             )
         elif bms is not None or ea is not None:
             charging = bool(ea and (ea.psi_output_on or abs(ea.psi_current_a) > 0.5))
