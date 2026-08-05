@@ -1447,10 +1447,18 @@ class SequenceEngine:
             soc_ref = p.get("soc_ref_pct")
             if soc_ref is not None:
                 target = float(soc_ref)
-                band = float(p.get("soc_band_pct", 5.0))
+                band = float(p.get("soc_band_pct", 2.0))
                 wait_s = float(p.get("soc_wait_s", 600.0))
+                require_soc = p.get("require_soc")
+                if require_soc is None:
+                    require_soc = True
+                elif isinstance(require_soc, str):
+                    require_soc = require_soc.strip().lower() in ("1", "true", "yes", "on")
+                else:
+                    require_soc = bool(require_soc)
                 self._event(
-                    f"dcir: waiting for SOC ≈ {target:.0f}% ±{band:.0f}% (timeout {wait_s:.0f}s)"
+                    f"dcir: waiting for SOC ≈ {target:.0f}% ±{band:.0f}% "
+                    f"(timeout {wait_s:.0f}s, require={'yes' if require_soc else 'no'})"
                 )
                 t_soc = time.monotonic()
                 while True:
@@ -1460,17 +1468,33 @@ class SequenceEngine:
                     self._check_abort_conditions(abort, mode=None)
                     b = self.bms.telemetry()
                     soc = b.soc_pct
-                    if soc is not None and abs(soc - target) <= band:
-                        self._event(f"dcir: SOC {soc:.1f}% within band of {target:.0f}%")
+                    if soc is not None and abs(float(soc) - target) <= band:
+                        self._event(f"dcir: SOC {soc:.1f}% within band of {target:.0f}% ±{band:.0f}%")
                         break
                     if time.monotonic() - t_soc > wait_s:
-                        soc_s = f"{soc:.1f}%" if soc is not None else "—"
-                        self._event(
-                            f"dcir: SOC wait timeout (SOC={soc_s}, target={target:.0f}%) — "
-                            "continuing with pulse anyway"
+                        soc_s = f"{float(soc):.1f}%" if soc is not None else "—"
+                        msg = (
+                            f"DCIR: SOC not in band — have {soc_s}, need "
+                            f"{target:.0f}% ±{band:.0f}% (waited {wait_s:.0f}s)"
                         )
+                        if require_soc:
+                            raise RuntimeError(msg + " — refusing pulse (result would be invalid)")
+                        self._event(msg + " — continuing with pulse (require_soc=false)")
                         break
                     time.sleep(self.poll_period_s)
+                # Final gate immediately before pulse (SOC can move during wait_time settle).
+                if require_soc:
+                    b = self.bms.telemetry()
+                    soc = b.soc_pct
+                    if soc is None:
+                        raise RuntimeError(
+                            f"DCIR: BMS SOC not available — cannot verify {target:.0f}% before pulse"
+                        )
+                    if abs(float(soc) - target) > band:
+                        raise RuntimeError(
+                            f"DCIR: SOC {float(soc):.1f}% outside {target:.0f}% ±{band:.0f}% "
+                            "immediately before pulse — refusing"
+                        )
             # Rest voltage from EA (EL sense), fallback BMS pack
             self.ea.all_off()
             time.sleep(1.0)
@@ -1514,13 +1538,20 @@ class SequenceEngine:
                 )
             dV = abs(float(v0 or 0) - v1)
             dcir_mohm = dV / i * 1000.0
+            soc_at = self.bms.telemetry().soc_pct
             with self._lock:
                 self._status.measurements.dcir_mohm = dcir_mohm
                 if soc_ref is not None:
                     self._status.measurements.extras["dcir_soc_ref_pct"] = float(soc_ref)
-            self._step_results[step.id] = {"dcir_mohm": dcir_mohm}
+                if soc_at is not None:
+                    self._status.measurements.extras["dcir_soc_pct"] = float(soc_at)
+            self._step_results[step.id] = {
+                "dcir_mohm": dcir_mohm,
+                "dcir_soc_pct": float(soc_at) if soc_at is not None else None,
+            }
+            soc_note = f", SOC={float(soc_at):.1f}%" if soc_at is not None else ""
             self._set_msg(
-                f"DCIR: {dcir_mohm:.3f} mOhm (dV={dV:.4f} V @ EL {i:.1f} A)"
+                f"DCIR: {dcir_mohm:.3f} mOhm (dV={dV:.4f} V @ EL {i:.1f} A{soc_note})"
             )
 
         elif t == "report":

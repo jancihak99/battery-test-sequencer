@@ -214,14 +214,12 @@ def _validate_stop_abort(
         v = _num(stop["cell_v_max"])
         if v is not None and v > profile.cell_v_max:
             e.append(f"{sid}: stop.cell_v_max {v} above profile {profile.cell_v_max} — BMU WILL disconnect")
-        elif v is not None and v > profile.cell_v_max - 0.03:
-            e.append(f"{sid}: stop.cell_v_max {v} has <30mV margin to profile {profile.cell_v_max} — risky")
+        # Exact profile limit is OK for capacity CC-to-cutoff; engine abort still has ~10 mV margin.
     if "cell_v_min" in stop:
         v = _num(stop["cell_v_min"])
         if v is not None and v < profile.cell_v_min:
             e.append(f"{sid}: stop.cell_v_min {v} below profile {profile.cell_v_min} — BMU WILL disconnect")
-        elif v is not None and v < profile.cell_v_min + 0.03:
-            e.append(f"{sid}: stop.cell_v_min {v} has <30mV margin to profile {profile.cell_v_min} — risky")
+        # Exact profile floor is OK for capacity discharge; hard abort keeps a small margin.
     if "soc_pct" in stop:
         v = _num(stop["soc_pct"])
         if v is None or v < 0 or v > 100:

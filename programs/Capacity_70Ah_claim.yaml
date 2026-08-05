@@ -56,6 +56,9 @@ steps:
     pulse_a: 300
     pulse_s: 10
     soc_ref_pct: 50
+    soc_band_pct: 2
+    soc_wait_s: 600
+    record: true
 
   - id: settle_after_dcir
     type: wait_time

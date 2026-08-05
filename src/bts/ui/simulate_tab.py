@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
@@ -51,8 +52,9 @@ class TraceChart(QWidget):
         self._y_getter: Callable[[SimSample], float] = lambda s: s.voltage_v
         self._y_lo: float | None = None
         self._y_hi: float | None = None
-        self.setMinimumHeight(160)
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setMinimumHeight(200)
+        self.setMaximumHeight(320)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
     def set_y_getter(self, fn: Callable[[SimSample], float]) -> None:
         self._y_getter = fn
@@ -162,15 +164,27 @@ class TraceChart(QWidget):
 
 
 class SimulateTab(QWidget):
-    """Show full stepfile U/I curves in one shot (random start state)."""
+    """Show full stepfile U/I curves in one shot (random start → converges after goto_soc)."""
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._get_program: Callable[[], tuple[Program | None, ModuleProfile | None]] | None = None
         self._sim: StepfileSimulator | None = None
 
-        root = QVBoxLayout(self)
-        root.setContentsMargins(12, 10, 12, 8)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        outer.addWidget(scroll)
+
+        body = QWidget()
+        scroll.setWidget(body)
+        root = QVBoxLayout(body)
+        root.setContentsMargins(12, 10, 12, 12)
         root.setSpacing(10)
 
         bar = QFrame()
@@ -184,11 +198,15 @@ class SimulateTab(QWidget):
 
         self.btn_run = QPushButton("Simulate")
         self.btn_run.setObjectName("btnPrimary")
-        self.btn_run.setToolTip("Compute entire stepfile curve at once (new random start).")
+        self.btn_run.setToolTip(
+            "Celá křivka najednou. Start SOC je náhodný — po goto_soc / nabití na limit "
+            "by měl zbytek programu vypadat stejně (jen začátek je kratší/delší)."
+        )
         self.btn_run.clicked.connect(self._run_full)
 
         self.lbl_step = QLabel("Simulate → full voltage / current curve from the Editor program.")
         self.lbl_step.setTextFormat(Qt.RichText)
+        self.lbl_step.setWordWrap(True)
         self.lbl_step.setStyleSheet(f"color:{TEXT_DIM};")
         self.lbl_vals = QLabel("—")
         self.lbl_vals.setStyleSheet(f"color:{TEXT};font-weight:600;")
@@ -201,11 +219,12 @@ class SimulateTab(QWidget):
 
         legend = QLabel()
         legend.setTextFormat(Qt.RichText)
+        legend.setWordWrap(True)
         legend.setText(
             f'<span style="color:{OK}">■ charge</span> &nbsp; '
             f'<span style="color:#c47a3a">■ discharge / pulse</span> &nbsp; '
             f'<span style="color:#8a96a3">■ wait / idle</span>'
-            f' &nbsp;&nbsp;·&nbsp;&nbsp; offline preview · whole program at once'
+            f' &nbsp;&nbsp;·&nbsp;&nbsp; náhodný start · po <b>goto_soc</b> / full charge se křivka srovná'
         )
         legend.setStyleSheet("background: transparent; font-size:11px;")
         root.addWidget(legend)
@@ -214,8 +233,9 @@ class SimulateTab(QWidget):
         self.chart_v.set_y_getter(lambda s: s.voltage_v)
         self.chart_i = TraceChart("Pack current", "A", color=OK)
         self.chart_i.set_y_getter(lambda s: s.current_a)
-        root.addWidget(self.chart_v, 1)
-        root.addWidget(self.chart_i, 1)
+        root.addWidget(self.chart_v)
+        root.addWidget(self.chart_i)
+        root.addStretch(1)
 
     def set_program_provider(
         self, fn: Callable[[], tuple[Program | None, ModuleProfile | None]]
@@ -241,7 +261,9 @@ class SimulateTab(QWidget):
             start_soc = self._sim.state.soc_pct
             start_v = self._sim.state.voltage_v
             sample_every = 1.0
-            n_power = sum(1 for s in program.steps if s.type in ("charge", "discharge"))
+            n_power = sum(
+                1 for s in program.steps if s.type in ("charge", "discharge", "goto_soc")
+            )
             if n_power >= 2:
                 sample_every = 5.0
             self._sim.run_all(sample_every=sample_every)

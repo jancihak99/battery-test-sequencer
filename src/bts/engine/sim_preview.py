@@ -122,6 +122,9 @@ class StepfileSimulator:
             return "charge"
         if t == "discharge":
             return "discharge"
+        if t == "goto_soc":
+            # Direction decided live in _goto_soc_step; start neutral.
+            return "idle"
         if t == "dcir":
             return "pulse"
         if t in ("wait_time", "wait_temp"):
@@ -257,9 +260,65 @@ class StepfileSimulator:
         if t == "discharge":
             return self._power_step(step, dt, elapsed, mode="discharge")
 
+        if t == "goto_soc":
+            return self._goto_soc_step(step, dt, elapsed)
+
         self.state.current_a = 0.0
         self.state.voltage_v = self._ocv(self.state.soc_pct)
         return elapsed >= 1.0
+
+    def _goto_soc_step(self, step: Step, dt: float, elapsed: float) -> bool:
+        """Charge or discharge toward target SOC — mirrors live engine precondition."""
+        p = step.params or {}
+        target = float(p.get("soc_pct", (p.get("stop") or {}).get("soc_pct", 50)))
+        band = float(p.get("band_pct", 0.5))
+        timeout = float(p.get("timeout_s", 8 * 3600))
+        try:
+            current = abs(
+                resolve_amps(
+                    p,
+                    self.profile,
+                    amp_key="current_a",
+                    default=self.profile.default_test_current_a,
+                )
+            )
+        except Exception:
+            current = abs(float(p.get("current_a", self.profile.default_test_current_a)))
+        current = max(0.1, current)
+
+        soc = self.state.soc_pct
+        if abs(soc - target) <= band:
+            self.state.current_a = 0.0
+            self.state.voltage_v = self._ocv(soc)
+            self.state.phase = "idle"
+            return True
+
+        if soc < target:
+            self.state.phase = "charge"
+            i = current
+            # Soft CV near pack max while climbing SOC
+            v_set = float(p.get("voltage_v", self.profile.pack_v_max))
+            if self.state.voltage_v >= v_set - 0.15:
+                i = max(current * 0.12, current * (v_set - self.state.voltage_v) / 0.35)
+        else:
+            self.state.phase = "discharge"
+            i = -current
+
+        self.state.current_a = i
+        dah = i * dt / 3600.0
+        self.state.soc_pct = max(0.0, min(100.0, soc + dah / self._cap_ah * 100.0))
+        self.state.voltage_v = self._terminal_v(self.state.soc_pct, i)
+        self.state.temp_c += (abs(i) / 500.0) ** 2 * 0.8 * dt
+        self.state.temp_c += (26.0 - self.state.temp_c) * 0.001 * dt
+
+        if abs(self.state.soc_pct - target) <= band:
+            self.state.soc_pct = target
+            self.state.current_a = 0.0
+            self.state.voltage_v = self._ocv(target)
+            return True
+        if elapsed >= timeout:
+            return True
+        return False
 
     def _power_step(self, step: Step, dt: float, elapsed: float, *, mode: str) -> bool:
         p = step.params or {}

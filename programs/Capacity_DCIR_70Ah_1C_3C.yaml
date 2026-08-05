@@ -28,6 +28,9 @@ steps:
     type: dcir
     c_rate: 5.0
     pulse_s: 10
+    soc_ref_pct: 50
+    soc_band_pct: 2
+    soc_wait_s: 300
     record: true
 
   - id: wait_10_after_dcir

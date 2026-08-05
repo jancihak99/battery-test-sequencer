@@ -140,7 +140,11 @@ class StepForm(QWidget):
         self.chk_abort_dtc = QCheckBox("Abort při DTC level ≥")
         self.chk_abort_dtc.setChecked(True)
 
-        self.chk_soc_ref = QCheckBox("DCIR: čekat na SOC")
+        self.chk_soc_ref = QCheckBox("DCIR: vyžadovat SOC (jinak FAIL)")
+        self.chk_soc_ref.setToolTip(
+            "Pulse se spustí jen když BMS SOC je v pásmu (default ±2 %). "
+            "Po timeoutu run SELŽE — nepulsuje mimo cílový SOC."
+        )
         self.ed_soc_ref = QDoubleSpinBox()
         self.ed_soc_ref.setRange(0, 100)
         self.ed_soc_ref.setDecimals(0)
@@ -277,7 +281,7 @@ class StepForm(QWidget):
             "goto_soc": "Z neznámého SOC nabije nebo vybije na cíl (auto směr). Ideální precondition.",
             "bms_ready": "BMU READY (stykače). Po sepnutí engine vždy čeká 10 s před dalším krokem.",
             "bms_idle": "Open contactors / IDLE.",
-            "dcir": "Pulse na EL. C-rate nebo A. Zapni „Zaznamenat stopu“ pro V/I během pulsu.",
+            "dcir": "Pulse na EL. C-rate nebo A. Zapni „vyžadovat SOC“ (typicky 50 %) — mimo pásmo = FAIL.",
             "notify": "Jen status zpráva (bez dialogu).",
             "report": "HTML/JSON report: kapacity, DCIR, grafy V/I/SOC ze stop s „Zaznamenat stopu“.",
         }
