@@ -13,7 +13,7 @@ import urllib.request
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import yaml
 
@@ -304,7 +304,12 @@ def _restore_paths(saved: list[tuple[Path, Path]]) -> None:
         shutil.copy2(backup, original)
 
 
-def _download(url: str, dest: Path, token: str | None) -> None:
+def _download(
+    url: str,
+    dest: Path,
+    token: str | None,
+    on_progress: Callable[[str, float | None], None] | None = None,
+) -> None:
     req = urllib.request.Request(
         url,
         headers={
@@ -314,8 +319,25 @@ def _download(url: str, dest: Path, token: str | None) -> None:
             **({"Authorization": f"Bearer {token}"} if token else {}),
         },
     )
-    with urllib.request.urlopen(req, timeout=120, context=_ssl_context()) as resp, dest.open("wb") as out:
-        shutil.copyfileobj(resp, out)
+    with urllib.request.urlopen(req, timeout=180, context=_ssl_context()) as resp, dest.open("wb") as out:
+        total_raw = resp.headers.get("Content-Length")
+        total = int(total_raw) if total_raw and str(total_raw).isdigit() else None
+        done = 0
+        while True:
+            chunk = resp.read(256 * 1024)
+            if not chunk:
+                break
+            out.write(chunk)
+            done += len(chunk)
+            if on_progress is None:
+                continue
+            if total and total > 0:
+                on_progress(
+                    f"Stahuji… {done / 1e6:.1f} / {total / 1e6:.1f} MB",
+                    min(1.0, done / total),
+                )
+            else:
+                on_progress(f"Stahuji… {done / 1e6:.1f} MB", None)
 
 
 def _extract_zipball(zip_path: Path, root: Path) -> None:
@@ -343,7 +365,10 @@ def _extract_zipball(zip_path: Path, root: Path) -> None:
                 shutil.copy2(item, dest)
 
 
-def _pip_reinstall(root: Path) -> None:
+def _pip_reinstall(
+    root: Path,
+    on_progress: Callable[[str, float | None], None] | None = None,
+) -> None:
     py = root / ".venv" / "Scripts" / "python.exe"
     if not py.exists():
         # Offline Setup layout: python\python.exe next to main.py
@@ -351,79 +376,180 @@ def _pip_reinstall(root: Path) -> None:
         py = embed if embed.exists() else Path(shutil.which("python") or "python")
     req = root / "requirements.txt"
     cmds = [
-        [str(py), "-m", "pip", "install", "--upgrade", "pip"],
-        [str(py), "-m", "pip", "install", "-r", str(req)],
-        [str(py), "-m", "pip", "install", "-e", str(root)],
+        ([str(py), "-m", "pip", "install", "--upgrade", "pip"], "Aktualizuji pip…", 0.72),
+        ([str(py), "-m", "pip", "install", "-r", str(req)], "Instaluji závislosti…", 0.85),
+        ([str(py), "-m", "pip", "install", "-e", str(root)], "Dokončuji instalaci balíčku…", 0.95),
     ]
-    for cmd in cmds:
+    for cmd, label, frac in cmds:
+        if on_progress:
+            on_progress(label, frac)
         log.info("Update pip: %s", " ".join(cmd))
         subprocess.run(cmd, cwd=str(root), check=False)
 
 
-def apply_update_from_release(root: Path, release: ReleaseInfo) -> str:
+def apply_update_from_release(
+    root: Path,
+    release: ReleaseInfo,
+    on_progress: Callable[[str, float | None], None] | None = None,
+) -> str:
     token = read_token(root)
     if not release.zipball_url:
         raise RuntimeError("Release has no zipball_url")
     saved = _preserve_paths(root)
     zip_path = Path(tempfile.mkstemp(suffix=".zip", prefix="bts_rel_")[1])
     try:
-        _download(release.zipball_url, zip_path, token)
+        if on_progress:
+            on_progress(f"Stahuji {release.tag}…", 0.02)
+        _download(release.zipball_url, zip_path, token, on_progress=on_progress)
+        if on_progress:
+            on_progress("Rozbaluji soubory…", 0.55)
         _extract_zipball(zip_path, root)
+        if on_progress:
+            on_progress("Obnovuji místní nastavení…", 0.65)
         _restore_paths(saved)
-        _pip_reinstall(root)
+        _pip_reinstall(root, on_progress=on_progress)
     finally:
         try:
             zip_path.unlink(missing_ok=True)
         except Exception:
             pass
+    if on_progress:
+        on_progress(f"Hotovo — {release.tag}", 1.0)
     return f"Updated to {release.tag}"
 
 
-def apply_update_via_git(root: Path) -> str:
+def apply_update_via_git(
+    root: Path,
+    on_progress: Callable[[str, float | None], None] | None = None,
+) -> str:
     if not (root / ".git").exists():
         raise RuntimeError("Not a git checkout")
+    if on_progress:
+        on_progress("git fetch…", 0.2)
     subprocess.run(["git", "fetch", "--tags", "--force"], cwd=str(root), check=True)
+    if on_progress:
+        on_progress("git pull…", 0.45)
     subprocess.run(["git", "pull", "--ff-only"], cwd=str(root), check=True)
-    _pip_reinstall(root)
+    _pip_reinstall(root, on_progress=on_progress)
     return f"git pull OK — version {read_version(root)}"
 
 
-def apply_best_update(root: Path, release: ReleaseInfo | None = None) -> str:
+def apply_best_update(
+    root: Path,
+    release: ReleaseInfo | None = None,
+    on_progress: Callable[[str, float | None], None] | None = None,
+) -> str:
     """Prefer git pull when clone exists; else download release zipball."""
     if (root / ".git").exists():
         try:
-            return apply_update_via_git(root)
+            return apply_update_via_git(root, on_progress=on_progress)
         except Exception as exc:
             log.warning("git update failed (%s) — falling back to zipball", exc)
     if release is None:
+        if on_progress:
+            on_progress("Hledám nejnovější release…", None)
         cfg = load_update_config(root)
         release = fetch_latest_release(cfg.github_repo, read_token(root))
-    return apply_update_from_release(root, release)
+    return apply_update_from_release(root, release, on_progress=on_progress)
+
+
+def _can_write_root(root: Path) -> bool:
+    try:
+        probe = root / ".bts_write_probe"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        return True
+    except OSError:
+        return False
+
+
+def _resolve_updater_python(root: Path, *, prefer_w: bool = True) -> Path:
+    candidates = []
+    if prefer_w:
+        candidates.extend(
+            [
+                root / "python" / "pythonw.exe",
+                root / ".venv" / "Scripts" / "pythonw.exe",
+            ]
+        )
+    candidates.extend(
+        [
+            root / "python" / "python.exe",
+            root / ".venv" / "Scripts" / "python.exe",
+        ]
+    )
+    for p in candidates:
+        if p.exists():
+            return p
+    which = shutil.which("pythonw" if prefer_w else "python") or shutil.which("python")
+    if which:
+        return Path(which)
+    raise FileNotFoundError("No Python found to run the updater")
 
 
 def spawn_external_updater(root: Path) -> Path:
-    """Launch a detached PowerShell updater so the GUI can exit."""
-    candidates = [
-        root / "scripts" / "Update-BTS.ps1",
-        root / "installer" / "Update-BTS.ps1",
-    ]
-    ps1 = next((p for p in candidates if p.exists()), None)
-    if ps1 is None:
-        raise FileNotFoundError("Missing scripts/Update-BTS.ps1")
-    flags = subprocess.CREATE_NEW_CONSOLE if os.name == "nt" else 0
-    subprocess.Popen(
-        [
-            "powershell",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(ps1),
-            "-Root",
-            str(root),
-            "-Restart",
-        ],
-        cwd=str(root),
-        creationflags=flags,
-    )
-    return ps1
+    """Launch detached update GUI (progress bar) so the main app can exit."""
+    gui = root / "scripts" / "update_gui.py"
+    if not gui.exists():
+        # Legacy fallback
+        ps1_candidates = [
+            root / "scripts" / "Update-BTS.ps1",
+            root / "installer" / "Update-BTS.ps1",
+        ]
+        ps1 = next((p for p in ps1_candidates if p.exists()), None)
+        if ps1 is None:
+            raise FileNotFoundError("Missing scripts/update_gui.py (and Update-BTS.ps1)")
+        flags = subprocess.CREATE_NEW_CONSOLE if os.name == "nt" else 0
+        subprocess.Popen(
+            [
+                "powershell",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(ps1),
+                "-Root",
+                str(root),
+                "-Restart",
+            ],
+            cwd=str(root),
+            creationflags=flags,
+        )
+        return ps1
+
+    need_admin = os.name == "nt" and not _can_write_root(root)
+    # UAC needs a console-capable python.exe; pythonw is fine when already writable
+    py = _resolve_updater_python(root, prefer_w=not need_admin)
+    args = [str(py), str(gui), str(root), "--wait-exit", "--restart"]
+
+    if need_admin:
+        import ctypes
+
+        # Quote for ShellExecuteW parameter string
+        params = subprocess.list2cmdline(args[1:])
+        rc = ctypes.windll.shell32.ShellExecuteW(
+            None, "runas", str(py), params, str(root), 1
+        )
+        if int(rc) <= 32:
+            raise RuntimeError(
+                "Windows nepovolil update jako správce (UAC). "
+                "Spusť BTS-Setup.exe z Releases, nebo spusť BTS jako správce a zkus znovu."
+            )
+        return gui
+
+    flags = 0
+    if os.name == "nt":
+        # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP — no flash console if pythonw
+        flags = getattr(subprocess, "DETACHED_PROCESS", 0x00000008) | 0x00000200
+        try:
+            subprocess.Popen(
+                args,
+                cwd=str(root),
+                creationflags=flags,
+                close_fds=True,
+            )
+        except TypeError:
+            subprocess.Popen(args, cwd=str(root), creationflags=flags)
+    else:
+        subprocess.Popen(args, cwd=str(root), start_new_session=True)
+    return gui

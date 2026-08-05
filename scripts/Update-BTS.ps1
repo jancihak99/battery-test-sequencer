@@ -1,4 +1,4 @@
-# Apply latest GitHub release / git pull, then optionally restart BTS.
+# Apply latest GitHub release, show progress GUI, then optionally restart BTS.
 [CmdletBinding()]
 param(
     [string]$Root = "",
@@ -18,29 +18,56 @@ if (-not (Test-Path (Join-Path $Root "main.py"))) {
 
 Write-Host "Updating BTS in $Root" -ForegroundColor Cyan
 
+$pyw = Join-Path $Root "python\pythonw.exe"
+$py = Join-Path $Root "python\python.exe"
+$venvPyw = Join-Path $Root ".venv\Scripts\pythonw.exe"
+$venvPy = Join-Path $Root ".venv\Scripts\python.exe"
+$gui = Join-Path $Root "scripts\update_gui.py"
+
+if (Test-Path $pyw) { $launcher = $pyw }
+elseif (Test-Path $venvPyw) { $launcher = $venvPyw }
+elseif (Test-Path $py) { $launcher = $py }
+elseif (Test-Path $venvPy) { $launcher = $venvPy }
+else { $launcher = "python" }
+
+$guiArgs = @($gui, $Root, "--wait-exit")
+if ($Restart) { $guiArgs += "--restart" }
+
+if (Test-Path $gui) {
+    Write-Host "Launching update progress window…" -ForegroundColor Cyan
+    & $launcher @guiArgs
+    exit $LASTEXITCODE
+}
+
+# Legacy path without update_gui.py
 $running = @(
     Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
         Where-Object { $_.CommandLine -match "main\.py" -and $_.Name -match "python" }
 )
 if ($running.Count -gt 0) {
-    if (-not $ForceKill) {
-        Write-Host "ERROR: BTS is running (PID(s): $($running.ProcessId -join ', '))." -ForegroundColor Red
-        Write-Host "Close the app with safe shutdown first, then update." -ForegroundColor Yellow
-        Write-Host "(Refusing force-kill — would leave EA/contactors unsafe.)" -ForegroundColor Yellow
-        if (-not $Restart) { pause }
-        exit 2
+    Write-Host "Waiting for BTS to exit…" -ForegroundColor Yellow
+    $deadline = (Get-Date).AddSeconds(45)
+    while (((Get-Date) -lt $deadline) -and ($running.Count -gt 0)) {
+        Start-Sleep -Milliseconds 400
+        $running = @(
+            Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+                Where-Object { $_.CommandLine -match "main\.py" -and $_.Name -match "python" -and $_.CommandLine -notmatch "update_gui" }
+        )
     }
-    foreach ($proc in $running) {
-        Write-Host "Force-stopping PID $($proc.ProcessId) (-ForceKill)" -ForegroundColor Yellow
-        Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue
+    if ($running.Count -gt 0) {
+        if (-not $ForceKill) {
+            Write-Host "ERROR: BTS still running. Close it, then retry." -ForegroundColor Red
+            if (-not $Restart) { pause }
+            exit 2
+        }
+        foreach ($proc in $running) {
+            Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue
+        }
+        Start-Sleep -Seconds 1
     }
-    Start-Sleep -Seconds 1
 }
 
-$py = Join-Path $Root ".venv\Scripts\python.exe"
-if (-not (Test-Path $py)) { $py = "python" }
-
-& $py (Join-Path $Root "scripts\apply_update.py") $Root
+& $launcher (Join-Path $Root "scripts\apply_update.py") $Root
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Update failed." -ForegroundColor Red
     if (-not $Restart) { pause }
@@ -48,7 +75,6 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Host "Update finished." -ForegroundColor Green
-
 if ($Restart) {
     $bat = Join-Path $Root "Start BTS.bat"
     if (Test-Path $bat) {

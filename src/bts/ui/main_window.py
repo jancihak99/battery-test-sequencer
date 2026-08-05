@@ -846,7 +846,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(self, "Aktualizace", done)
 
     def _apply_updates(self, *, confirm: bool = True) -> None:
-        from bts.update import apply_best_update, spawn_external_updater
+        from bts.update import spawn_external_updater
 
         if self._engine_is_alive():
             QMessageBox.warning(self, "Aktualizace", "Nejdřív Stop / dokonči běžící test.")
@@ -863,29 +863,39 @@ class MainWindow(QMainWindow):
             reply = QMessageBox.question(
                 self,
                 "Aktualizace",
-                "Apka se ukončí, stáhne update z GitHubu a znovu spustí.\nPokračovat?",
+                "Aplikace se zavře a otevře se okno „Aktualizace BTS“ s progress barem.\n"
+                "Počkejte, až doběhne — BTS se potom spustí samo.\n\n"
+                "Když Windows zeptá na oprávnění správce (Program Files), potvrďte.\n\n"
+                "Pokračovat?",
             )
             if reply != QMessageBox.Yes:
                 return
+        else:
+            QMessageBox.information(
+                self,
+                "Aktualizace",
+                "Aplikace se teď zavře.\n\n"
+                "Sledujte okno „Aktualizace BTS“ s progress barem — "
+                "po dokončení se BTS spustí samo.\n"
+                "(Případný dotaz Windows na správce potvrďte.)",
+            )
         try:
-            # Prefer detached updater (can overwrite files while we exit)
             spawn_external_updater(self.cfg.root)
-            self._log("Update spuštěn — aplikace se zavře")
-            QTimer.singleShot(400, QApplication.instance().quit)
-        except Exception as exc:
-            # Fallback in-process (can freeze UI — last resort)
-            try:
-                if hasattr(self, "lbl_update_status"):
-                    self.lbl_update_status.setText("Stahuji update… (počkej)")
-                QApplication.processEvents()
-                msg = apply_best_update(self.cfg.root, self._pending_release)
-                QMessageBox.information(
-                    self,
-                    "Aktualizace",
-                    f"{msg}\n\nRestartuj BTS (Start BTS.bat).",
+            self._log("Update spuštěn — aplikace se zavře; sleduj okno Aktualizace BTS")
+            if hasattr(self, "lbl_update_status"):
+                self.lbl_update_status.setText(
+                    "Aktualizace běží v samostatném okně — apka se teď zavře…"
                 )
-            except Exception as exc2:
-                QMessageBox.critical(self, "Aktualizace selhala", f"{exc}\n{exc2}")
+            self.statusBar().showMessage("Aktualizace — sleduj progress okno", 8000)
+            # Give the updater process a moment to appear before we exit
+            QTimer.singleShot(900, QApplication.instance().quit)
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "Aktualizace selhala",
+                f"Nepodařilo se spustit updater:\n{exc}\n\n"
+                "Stáhni BTS-Setup.exe z GitHub Releases a nainstaluj znovu.",
+            )
 
     def _maybe_check_updates_on_startup(self) -> None:
         """Customer PC: query GitHub Releases in background; prompt if newer."""
