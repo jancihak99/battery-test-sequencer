@@ -2,9 +2,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from bts.models.current import resolve_amps
 from bts.models.program import ModuleProfile, Program, Step
+
+
+def _f(value: Any, default: float) -> float:
+    """float() that tolerates a present-but-null / unparseable value."""
+    if value is None:
+        return float(default)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
 
 
 @dataclass(frozen=True)
@@ -68,20 +79,20 @@ def estimate_step(step: Step, profile: ModuleProfile | None = None) -> StepEstim
     cap = _capacity_ah(profile)
 
     if t == "wait_time":
-        sec = float(p.get("seconds", p.get("timeout_s", 1)))
+        sec = _f(p.get("seconds"), _f(p.get("timeout_s"), 1))
         return StepEstimate(step.id, t, max(0.0, sec), note="fixed")
 
     if t in ("bms_ready", "bms_idle"):
         # Handshake is usually quick; timeout is only a ceiling.
-        timeout = float(p.get("timeout_s", 60 if t == "bms_ready" else 30))
+        timeout = _f(p.get("timeout_s"), 60 if t == "bms_ready" else 30)
         est = min(15.0, max(5.0, timeout * 0.25))
         if t == "bms_ready":
             # Engine always dwells after contactors close (default 10 s).
-            est += float(p.get("settle_s", 10.0))
+            est += _f(p.get("settle_s"), 10.0)
         return StepEstimate(step.id, t, est, uncertain=True, note="handshake")
 
     if t == "wait_temp":
-        timeout = float(p.get("timeout_s", 7200))
+        timeout = _f(p.get("timeout_s"), 7200)
         # Cooling time varies a lot — use a modest fraction of timeout.
         est = min(timeout, max(120.0, timeout * 0.15))
         return StepEstimate(step.id, t, est, uncertain=True, note="cooling")
@@ -89,7 +100,7 @@ def estimate_step(step: Step, profile: ModuleProfile | None = None) -> StepEstim
     if t in ("charge", "discharge", "goto_soc"):
         current = _resolve_step_amps(step, profile, amp_key="current_a")
         stop = p.get("stop") or {}
-        timeout = float(stop.get("timeout_s", p.get("timeout_s", 8 * 3600)))
+        timeout = _f(stop.get("timeout_s"), _f(p.get("timeout_s"), 8 * 3600))
 
         if t == "goto_soc":
             # Unknown start SOC — assume up to half pack at resolved C-rate/A.
@@ -100,7 +111,7 @@ def estimate_step(step: Step, profile: ModuleProfile | None = None) -> StepEstim
             )
 
         if "ah_target" in stop:
-            ah = float(stop["ah_target"])
+            ah = _f(stop.get("ah_target"), cap)
             est = ah / current * 3600.0
             return StepEstimate(step.id, t, min(est, timeout), note="Ah target")
 
@@ -122,7 +133,7 @@ def estimate_step(step: Step, profile: ModuleProfile | None = None) -> StepEstim
         )
 
     if t == "dcir":
-        pulse = float(p.get("pulse_s", profile.dcir_pulse_s if profile else 10.0))
+        pulse = _f(p.get("pulse_s"), profile.dcir_pulse_s if profile else 10.0)
         return StepEstimate(step.id, t, pulse + 2.0, note="pulse")
 
     if t in ("report", "notify"):

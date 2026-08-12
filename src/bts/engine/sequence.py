@@ -1254,12 +1254,13 @@ class SequenceEngine:
             stop = dict(p.get("stop") or {})
             # Fill missing pack stop from temperature-aware profile cutoffs.
             # With i_min_a (CV), pack_v_max is informational for logs / near-V — step ends on i_min.
-            t_now = self.bms.telemetry().t_max_c
+            # Cold-charge ceiling is governed by the coldest cell → use t_min_c.
+            t_cold = self.bms.telemetry().t_min_c
             if "pack_v_max" not in stop:
-                stop["pack_v_max"] = self.profile.charge_pack_vmax(t_now)
+                stop["pack_v_max"] = self.profile.charge_pack_vmax(t_cold)
                 self._event(
                     f"charge: stop.pack_v_max from profile cutoff = {stop['pack_v_max']:.2f}V "
-                    f"(Tmax={t_now if t_now is not None else '—'}°C)"
+                    f"(Tmin={t_cold if t_cold is not None else '—'}°C)"
                     + (" — CV via i_min_a, Vmax alone does not end step" if "i_min_a" in stop else "")
                 )
             # Cell voltage stop — safety net from profile, stops before BMU disconnect.
@@ -1461,7 +1462,12 @@ class SequenceEngine:
             self._wait_until(ok, timeout, "temperature window", require_ea=False)
 
         elif t == "wait_time":
-            seconds = float(p.get("seconds", p.get("timeout_s", 1)))
+            # Tolerate a present-but-null YAML key (seconds:) → fall back, not crash.
+            seconds = float(
+                p.get("seconds")
+                if p.get("seconds") is not None
+                else (p.get("timeout_s") if p.get("timeout_s") is not None else 1)
+            )
             t0 = time.monotonic()
             while time.monotonic() - t0 < seconds:
                 if self._abort.is_set():

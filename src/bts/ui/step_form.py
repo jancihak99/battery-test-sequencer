@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from bts.models.program import STEP_TYPES, Step
+from bts.ui.theme import BORDER, TEXT_DIM
 
 
 class StepForm(QWidget):
@@ -32,7 +33,10 @@ class StepForm(QWidget):
         self._syncing_current = False
         self._hint = QLabel("")
         self._hint.setWordWrap(True)
-        self._hint.setStyleSheet("color:#555;")
+        self._hint.setStyleSheet(
+            f"color:{TEXT_DIM}; padding:8px 10px; background:#f2f6fa;"
+            f"border:1px solid {BORDER}; border-radius:4px;"
+        )
 
         self.ed_step_id = QLineEdit()
         self.ed_step_type = QComboBox()
@@ -48,6 +52,16 @@ class StepForm(QWidget):
         self.ed_timeout.setRange(1, 86400)
         self.ed_timeout.setSuffix(" s")
         self.ed_timeout.setValue(60)
+
+        self.ed_settle = QDoubleSpinBox()
+        self.ed_settle.setRange(0, 600)
+        self.ed_settle.setDecimals(0)
+        self.ed_settle.setSuffix(" s")
+        self.ed_settle.setValue(10)
+        self.ed_settle.setToolTip(
+            "Po sepnutí stykačů engine počká tuto dobu, než pustí další krok "
+            "(default 10 s — ochrana stykačů)."
+        )
 
         self.ed_current = QDoubleSpinBox()
         self.ed_current.setRange(0.1, 2000)
@@ -71,7 +85,7 @@ class StepForm(QWidget):
         self.ed_crate.valueChanged.connect(self._on_crate_changed)
         self.ed_current.valueChanged.connect(self._on_current_changed)
         self.lbl_crate_link = QLabel("")
-        self.lbl_crate_link.setStyleSheet("color:#666;font-size:11px;")
+        self.lbl_crate_link.setStyleSheet(f"color:{TEXT_DIM};font-size:11px;")
         self._refresh_crate_link_label()
 
         self.ed_voltage = QDoubleSpinBox()
@@ -142,6 +156,17 @@ class StepForm(QWidget):
         self.chk_stop_soc = QCheckBox("Stop on SOC")
         self.chk_stop_ah = QCheckBox("Stop on Ah target")
 
+        # goto_soc: how close to target counts as "reached"
+        self.ed_band_pct = QDoubleSpinBox()
+        self.ed_band_pct.setRange(0.1, 20)
+        self.ed_band_pct.setDecimals(1)
+        self.ed_band_pct.setSuffix(" %")
+        self.ed_band_pct.setValue(0.5)
+        self.ed_band_pct.setToolTip(
+            "Tolerance kolem cílového SOC — když je pack v tomto pásmu, goto_soc je splněný "
+            "(default ±0,5 %)."
+        )
+
         self.ed_abort_tmax = QDoubleSpinBox()
         self.ed_abort_tmax.setRange(-60, 100)
         self.ed_abort_tmax.setSuffix(" °C")
@@ -154,16 +179,34 @@ class StepForm(QWidget):
         self.chk_abort_dtc = QCheckBox("Abort při DTC level ≥")
         self.chk_abort_dtc.setChecked(True)
 
-        self.chk_soc_ref = QCheckBox("DCIR: vyžadovat SOC (jinak FAIL)")
+        self.chk_soc_ref = QCheckBox("DCIR: vyžadovat SOC (SOC brána)")
         self.chk_soc_ref.setToolTip(
-            "Pulse se spustí jen když BMS SOC je v pásmu (default ±2 %). "
-            "Po timeoutu run SELŽE — nepulsuje mimo cílový SOC."
+            "Pulse se spustí jen když BMS SOC je v pásmu. "
+            "Chování při timeoutu řídí „Mimo pásmo = FAIL“ níže."
         )
         self.ed_soc_ref = QDoubleSpinBox()
         self.ed_soc_ref.setRange(0, 100)
         self.ed_soc_ref.setDecimals(0)
         self.ed_soc_ref.setSuffix(" %")
         self.ed_soc_ref.setValue(50)
+        self.ed_dcir_band = QDoubleSpinBox()
+        self.ed_dcir_band.setRange(0.1, 20)
+        self.ed_dcir_band.setDecimals(0)
+        self.ed_dcir_band.setSuffix(" %")
+        self.ed_dcir_band.setValue(2)
+        self.ed_dcir_band.setToolTip("Šířka pásma kolem reference SOC, ve které se pulz smí spustit.")
+        self.ed_dcir_wait = QDoubleSpinBox()
+        self.ed_dcir_wait.setRange(1, 7200)
+        self.ed_dcir_wait.setDecimals(0)
+        self.ed_dcir_wait.setSuffix(" s")
+        self.ed_dcir_wait.setValue(600)
+        self.ed_dcir_wait.setToolTip("Jak dlouho čekat na SOC v pásmu, než se rozhodne.")
+        self.chk_require_soc = QCheckBox("Mimo pásmo = FAIL (jinak pulzuj dál)")
+        self.chk_require_soc.setChecked(True)
+        self.chk_require_soc.setToolTip(
+            "Zaškrtnuto: po timeoutu run SELŽE (výsledek mimo SOC by byl neplatný). "
+            "Vypnuto: pulz proběhne i mimo pásmo."
+        )
 
         self.chk_respect_bmu = QCheckBox("Omezit I podle BMU limit (charge/discharge)")
         self.chk_respect_bmu.setToolTip(
@@ -205,39 +248,54 @@ class StepForm(QWidget):
         self.chk_rep_cap_1c.setChecked(False)
         self.chk_rep_cap_3c.setChecked(False)
 
-        self.btn_apply = QPushButton("Apply step changes")
+        self.btn_apply = QPushButton("Použít změny kroku")
+        self.btn_apply.setToolTip(
+            "Změny se ukládají i automaticky (při přepnutí kroku / Validovat / Uložit) — "
+            "tohle je jen okamžité potvrzení."
+        )
         self.btn_apply.clicked.connect(self._emit_apply)
 
         form = QFormLayout()
-        self._rows: dict[str, list] = {}
-
-        def add(key: str, label: str, widget) -> None:
-            form.addRow(label, widget)
-            # store the label widget from form — use wrapper
-            self._rows[key] = (label, widget)
-
-        # We need show/hide of whole rows — use labels as keys via QWidget wrappers
-        self._row_widgets: dict[str, tuple[QLabel, QWidget]] = {}
+        # Whole-row show/hide keyed by name. Section headers store (label, None).
+        self._row_widgets: dict[str, tuple[QLabel, QWidget | None]] = {}
 
         def add_row(key: str, label: str, widget: QWidget) -> None:
             lab = QLabel(label)
             form.addRow(lab, widget)
             self._row_widgets[key] = (lab, widget)
 
+        def add_section(key: str, title: str) -> None:
+            lab = QLabel(title.upper())
+            lab.setStyleSheet(
+                f"color:{TEXT_DIM}; font-size:10px; font-weight:700; letter-spacing:1px;"
+                f"margin-top:12px; padding-bottom:3px; border-bottom:1px solid {BORDER};"
+            )
+            form.addRow(lab)
+            self._row_widgets[key] = (lab, None)
+
         add_row("id", "Step id", self.ed_step_id)
         add_row("type", "Type", self.ed_step_type)
+
+        add_section("sec_timing", "Časování")
         add_row("seconds", "Duration (wait_time)", self.ed_seconds)
         add_row("timeout", "Timeout", self.ed_timeout)
+        add_row("settle", "Odstup po stykačích", self.ed_settle)
+
+        add_section("sec_temp", "Teplota")
+        add_row("use_tmax", "", self.chk_use_tmax)
+        add_row("tmax", "T max", self.ed_tmax)
+        add_row("use_tmin", "", self.chk_use_tmin)
+        add_row("tmin", "T min", self.ed_tmin)
+
+        add_section("sec_current", "Proud")
         add_row("use_crate", "", self.chk_use_crate)
         add_row("crate", "C-rate", self.ed_crate)
         add_row("current", "Current / pulse (A)", self.ed_current)
         add_row("crate_link", "", self.lbl_crate_link)
         add_row("voltage", "Charge voltage", self.ed_voltage)
         add_row("pulse_s", "Pulse duration", self.ed_pulse_s)
-        add_row("use_tmax", "", self.chk_use_tmax)
-        add_row("tmax", "T max", self.ed_tmax)
-        add_row("use_tmin", "", self.chk_use_tmin)
-        add_row("tmin", "T min", self.ed_tmin)
+
+        add_section("sec_stop", "Stop podmínky")
         add_row("stop_pack_vmax", "", self.chk_stop_pack_vmax)
         add_row("pack_vmax", "Pack Vmax", self.ed_pack_vmax)
         add_row("stop_pack_vmin", "", self.chk_stop_pack_vmin)
@@ -252,13 +310,23 @@ class StepForm(QWidget):
         add_row("imin", "i_min (CV cutoff)", self.ed_imin)
         add_row("stop_ah", "", self.chk_stop_ah)
         add_row("ah", "Ah target", self.ed_ah)
+
+        add_section("sec_soc", "SOC brána")
+        add_row("band_pct", "SOC tolerance (±)", self.ed_band_pct)
+        add_row("soc_ref_chk", "", self.chk_soc_ref)
+        add_row("soc_ref", "SOC reference", self.ed_soc_ref)
+        add_row("dcir_band", "SOC pásmo (±)", self.ed_dcir_band)
+        add_row("dcir_wait", "Čekat na SOC", self.ed_dcir_wait)
+        add_row("require_soc", "", self.chk_require_soc)
+
+        add_section("sec_safety", "Bezpečnost")
         add_row("abort_tmax", "", self.chk_abort_tmax)
         add_row("abort_tmax_v", "Abort Tmax", self.ed_abort_tmax)
         add_row("abort_dtc", "", self.chk_abort_dtc)
         add_row("abort_dtc_v", "DTC level ≥", self.ed_abort_dtc)
-        add_row("soc_ref_chk", "", self.chk_soc_ref)
-        add_row("soc_ref", "SOC reference", self.ed_soc_ref)
         add_row("respect_bmu", "", self.chk_respect_bmu)
+
+        add_section("sec_record", "Záznam & report")
         add_row("record", "", self.chk_record)
         add_row("measure", "", self.ed_measure_cap)
         add_row("measure_key", "Klíč kapacity", self.ed_measure_key)
@@ -271,12 +339,38 @@ class StepForm(QWidget):
         add_row("rep_temps", "", self.chk_rep_temps)
         add_row("rep_dtc", "", self.chk_rep_dtc)
 
+        # Grey out a value field until its enabling checkbox is on — the form
+        # then shows at a glance which limits are actually active.
+        self._link(self.chk_use_tmax, self.ed_tmax)
+        self._link(self.chk_use_tmin, self.ed_tmin)
+        self._link(self.chk_stop_pack_vmax, self.ed_pack_vmax)
+        self._link(self.chk_stop_pack_vmin, self.ed_pack_vmin)
+        self._link(self.chk_stop_cell_vmax, self.ed_cell_vmax)
+        self._link(self.chk_stop_cell_vmin, self.ed_cell_vmin)
+        self._link(self.chk_stop_soc, self.ed_soc)
+        self._link(self.chk_stop_imin, self.ed_imin)
+        self._link(self.chk_stop_ah, self.ed_ah)
+        self._link(self.chk_abort_tmax, self.ed_abort_tmax)
+        self._link(self.chk_abort_dtc, self.ed_abort_dtc)
+        self._link(self.chk_soc_ref, self.ed_soc_ref, self.ed_dcir_band, self.ed_dcir_wait, self.chk_require_soc)
+        self._link(self.ed_measure_cap, self.ed_measure_key)
+
         layout = QVBoxLayout(self)
         layout.addWidget(self._hint)
         layout.addLayout(form)
         layout.addWidget(self.btn_apply)
         layout.addStretch()
         self._on_type_changed(self.ed_step_type.currentText())
+
+    def _link(self, chk: QCheckBox, *fields: QWidget) -> None:
+        """Enable the given fields only while ``chk`` is checked."""
+        def _apply() -> None:
+            on = chk.isChecked()
+            for f in fields:
+                f.setEnabled(on)
+
+        chk.toggled.connect(lambda _=False: _apply())
+        _apply()
 
     def set_capacity_ah(self, ah: float) -> None:
         """Nominal Ah from active module profile — locks C-rate ↔ amps."""
@@ -347,7 +441,8 @@ class StepForm(QWidget):
         for key, (lab, wid) in self._row_widgets.items():
             vis = key in show
             lab.setVisible(vis)
-            wid.setVisible(vis)
+            if wid is not None:
+                wid.setVisible(vis)
 
     def _on_type_changed(self, stype: str) -> None:
         hints = {
@@ -358,7 +453,7 @@ class StepForm(QWidget):
             "discharge": "CC na EL až do Vmin/článek/SOC/Ah (kapacita = measure). Ne CV. "
             "„Zaznamenat stopu“ = CSV + V/I grafy.",
             "goto_soc": "Z neznámého SOC nabije nebo vybije na cíl (auto směr). Ideální precondition.",
-            "bms_ready": "BMU READY (stykače). Po sepnutí engine vždy čeká 10 s před dalším krokem.",
+            "bms_ready": "BMU READY (stykače). Po sepnutí engine čeká „Odstup po stykačích“ před dalším krokem.",
             "bms_idle": "Open contactors / IDLE.",
             "dcir": "Pulse na EL. C-rate nebo A. Zapni „vyžadovat SOC“ (typicky 50 %) — mimo pásmo = FAIL.",
             "notify": "Jen status zpráva (bez dialogu).",
@@ -366,37 +461,49 @@ class StepForm(QWidget):
         }
         self._hint.setText(hints.get(stype, ""))
         if stype == "wait_time":
-            self._show("seconds")
-        elif stype in ("bms_ready", "bms_idle"):
-            self._show("timeout")
+            self._show("sec_timing", "seconds")
+        elif stype == "bms_ready":
+            self._show("sec_timing", "timeout", "settle")
+        elif stype == "bms_idle":
+            self._show("sec_timing", "timeout")
         elif stype == "wait_temp":
-            self._show("use_tmax", "tmax", "use_tmin", "tmin", "timeout")
+            self._show("sec_temp", "use_tmax", "tmax", "use_tmin", "tmin", "sec_timing", "timeout")
         elif stype == "goto_soc":
             self._show(
+                "sec_current",
                 "use_crate",
                 "crate",
                 "current",
                 "crate_link",
                 "voltage",
+                "sec_timing",
                 "timeout",
+                "sec_stop",
                 "stop_soc",
                 "soc",
+                "sec_soc",
+                "band_pct",
+                "sec_safety",
                 "respect_bmu",
-                "record",
                 "abort_tmax",
                 "abort_tmax_v",
                 "abort_dtc",
                 "abort_dtc_v",
+                "sec_record",
+                "record",
             )
             self.chk_stop_soc.setChecked(True)
         elif stype == "charge":
             self._show(
+                "sec_current",
                 "use_crate",
                 "crate",
                 "current",
                 "crate_link",
                 "voltage",
+                "sec_timing",
                 "timeout",
+                "sec_stop",
                 "stop_pack_vmax",
                 "pack_vmax",
                 "stop_cell_vmax",
@@ -407,20 +514,25 @@ class StepForm(QWidget):
                 "imin",
                 "stop_ah",
                 "ah",
+                "sec_safety",
                 "respect_bmu",
-                "record",
                 "abort_tmax",
                 "abort_tmax_v",
                 "abort_dtc",
                 "abort_dtc_v",
+                "sec_record",
+                "record",
             )
         elif stype == "discharge":
             self._show(
+                "sec_current",
                 "use_crate",
                 "crate",
                 "current",
                 "crate_link",
+                "sec_timing",
                 "timeout",
+                "sec_stop",
                 "stop_pack_vmin",
                 "pack_vmin",
                 "stop_cell_vmin",
@@ -429,31 +541,41 @@ class StepForm(QWidget):
                 "soc",
                 "stop_ah",
                 "ah",
-                "record",
-                "measure",
-                "measure_key",
+                "sec_safety",
                 "respect_bmu",
                 "abort_tmax",
                 "abort_tmax_v",
                 "abort_dtc",
                 "abort_dtc_v",
+                "sec_record",
+                "record",
+                "measure",
+                "measure_key",
             )
         elif stype == "dcir":
             self._show(
+                "sec_current",
                 "use_crate",
                 "crate",
                 "current",
                 "crate_link",
                 "pulse_s",
+                "sec_soc",
                 "soc_ref_chk",
                 "soc_ref",
+                "dcir_band",
+                "dcir_wait",
+                "require_soc",
+                "sec_safety",
                 "respect_bmu",
+                "sec_record",
                 "record",
             )
         elif stype == "notify":
-            self._show("message")
+            self._show("sec_record", "message")
         elif stype == "report":
             self._show(
+                "sec_record",
                 "rep_cap",
                 "rep_cap_1c",
                 "rep_cap_3c",
@@ -463,7 +585,7 @@ class StepForm(QWidget):
                 "rep_dtc",
             )
         else:
-            self._show("timeout")
+            self._show("sec_timing", "timeout")
         self.type_changed.emit(stype)
 
     def load_step(self, step: Step) -> None:
@@ -479,6 +601,7 @@ class StepForm(QWidget):
 
         self.ed_seconds.setValue(int(p.get("seconds") or p.get("timeout_s") or 60))
         self.ed_timeout.setValue(int(p.get("timeout_s") or stop.get("timeout_s") or 60))
+        self.ed_settle.setValue(float(p.get("settle_s", 10)))
         has_crate = "c_rate" in p and p.get("c_rate") is not None and str(p.get("c_rate")).strip() != ""
         self.chk_use_crate.setChecked(has_crate or ("current_a" not in p and "pulse_a" not in p))
         if has_crate:
@@ -488,6 +611,7 @@ class StepForm(QWidget):
             self._set_linked_current(amps=float(amps) if amps is not None else self._capacity_ah)
         self.ed_voltage.setValue(float(p.get("voltage_v") or 27.5))
         self.ed_pulse_s.setValue(float(p.get("pulse_s") or 10))
+        self.ed_band_pct.setValue(float(p.get("band_pct", 0.5)))
 
         self.chk_use_tmax.setChecked("t_max_c" in p)
         self.chk_use_tmin.setChecked("t_min_c" in p)
@@ -530,28 +654,21 @@ class StepForm(QWidget):
         self.chk_soc_ref.setChecked("soc_ref_pct" in p)
         if "soc_ref_pct" in p:
             self.ed_soc_ref.setValue(float(p["soc_ref_pct"]))
+        self.ed_dcir_band.setValue(float(p.get("soc_band_pct", 2)))
+        self.ed_dcir_wait.setValue(float(p.get("soc_wait_s", 600)))
+        self.chk_require_soc.setChecked(_as_bool(p.get("require_soc"), default=True))
 
         # Tri-state-ish: explicit false unchecks; missing uses engine defaults (shown checked for CV/dch)
         if "respect_bmu_limits" in p:
-            raw = p.get("respect_bmu_limits")
-            if isinstance(raw, str):
-                self.chk_respect_bmu.setChecked(raw.strip().lower() in ("1", "true", "yes", "on"))
-            else:
-                self.chk_respect_bmu.setChecked(bool(raw))
+            self.chk_respect_bmu.setChecked(_as_bool(p.get("respect_bmu_limits"), default=False))
         else:
             # Visual default matches engine: ON u nabíjení/vybíjení (a dcir/goto_soc).
-            stype = step.type
-            stop = p.get("stop") or {}
             self.chk_respect_bmu.setChecked(
-                stype in ("charge", "discharge", "dcir", "goto_soc")
+                step.type in ("charge", "discharge", "dcir", "goto_soc")
             )
 
         self.ed_message.setText(str(p.get("message") or ""))
-        raw_rec = p.get("record")
-        if isinstance(raw_rec, str):
-            rec = raw_rec.strip().lower() in ("1", "true", "yes", "on")
-        else:
-            rec = bool(raw_rec)
+        rec = _as_bool(p.get("record"), default=False)
         meas = p.get("measure")
         self.ed_measure_cap.setChecked(bool(meas))
         self.ed_measure_key.setText(str(meas or "capacity_ah"))
@@ -576,7 +693,10 @@ class StepForm(QWidget):
 
         if stype == "wait_time":
             p["seconds"] = int(self.ed_seconds.value())
-        elif stype in ("bms_ready", "bms_idle"):
+        elif stype == "bms_ready":
+            p["timeout_s"] = int(self.ed_timeout.value())
+            p["settle_s"] = float(self.ed_settle.value())
+        elif stype == "bms_idle":
             p["timeout_s"] = int(self.ed_timeout.value())
         elif stype == "wait_temp":
             if self.chk_use_tmax.isChecked():
@@ -589,6 +709,7 @@ class StepForm(QWidget):
             p["voltage_v"] = float(self.ed_voltage.value())
             p["timeout_s"] = int(self.ed_timeout.value())
             p["soc_pct"] = float(self.ed_soc.value())
+            p["band_pct"] = float(self.ed_band_pct.value())
             p["respect_bmu_limits"] = bool(self.chk_respect_bmu.isChecked())
             if self.chk_record.isChecked():
                 p["record"] = True
@@ -659,6 +780,9 @@ class StepForm(QWidget):
                 p["record"] = True
             if self.chk_soc_ref.isChecked():
                 p["soc_ref_pct"] = float(self.ed_soc_ref.value())
+                p["soc_band_pct"] = float(self.ed_dcir_band.value())
+                p["soc_wait_s"] = float(self.ed_dcir_wait.value())
+                p["require_soc"] = bool(self.chk_require_soc.isChecked())
         elif stype == "notify":
             p["message"] = self.ed_message.text().strip()
         elif stype == "report":
@@ -687,3 +811,12 @@ class StepForm(QWidget):
 
     def _emit_apply(self) -> None:
         self.applied.emit(self.build_step())
+
+
+def _as_bool(raw: Any, *, default: bool) -> bool:
+    """Coerce YAML truthy values (bool / int / '1'/'true'/'yes'/'on')."""
+    if raw is None:
+        return default
+    if isinstance(raw, str):
+        return raw.strip().lower() in ("1", "true", "yes", "on")
+    return bool(raw)

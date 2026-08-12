@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
 
 from bts.engine.estimate import ProgramEstimate, format_duration
 from bts.engine.sequence import RunState
-from bts.ui.theme import ACCENT, BORDER, CHART_BG, OK, TEXT, TEXT_DIM
+from bts.ui.theme import ACCENT, BG_PANEL, BORDER, CHART_BG, OK, TEXT, TEXT_DIM
 
 # Full ring/power animation speed at 6C (matches schematic particle max).
 _MAX_C_RATE = 6.0
@@ -251,11 +251,11 @@ class RunProgressPanel(QFrame):
         super().__init__(parent)
         self.setObjectName("runProgress")
         self.setStyleSheet(
-            f"#runProgress {{ background:{CHART_BG}; border:1px solid {BORDER};"
-            f" border-radius:8px; }}"
+            f"#runProgress {{ background:{BG_PANEL}; border:1px solid {BORDER};"
+            f" border-radius:6px; }}"
         )
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.setMinimumHeight(86)
+        self.setMinimumHeight(92)
 
         self._estimate: ProgramEstimate | None = None
         self._run_state = RunState.IDLE
@@ -277,8 +277,8 @@ class RunProgressPanel(QFrame):
         self._tick.timeout.connect(self._paint_progress)
 
         root = QHBoxLayout(self)
-        root.setContentsMargins(12, 10, 14, 10)
-        root.setSpacing(14)
+        root.setContentsMargins(16, 12, 18, 12)
+        root.setSpacing(16)
 
         self.ring = ActivityRing()
         root.addWidget(self.ring, 0, Qt.AlignVCenter)
@@ -310,8 +310,8 @@ class RunProgressPanel(QFrame):
         self.bar.setTextVisible(False)
         self.bar.setFixedHeight(8)
         self.bar.setStyleSheet(
-            f"QProgressBar {{ background:#ffffff; border:1px solid {BORDER};"
-            f" border-radius:4px; }}"
+            f"QProgressBar {{ background:{CHART_BG}; border:none;"
+            f" border-radius:3px; }}"
             f"QProgressBar::chunk {{ background:{ACCENT}; border-radius:3px; }}"
         )
         col.addWidget(self.bar)

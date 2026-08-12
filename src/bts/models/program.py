@@ -51,12 +51,19 @@ class ModuleProfile:
         known = {k: data[k] for k in cls.__dataclass_fields__ if k in data and k != "raw"}
         return cls(raw=data, **known)
 
-    def charge_pack_vmax(self, t_max_c: float | None) -> float:
-        """Pack charge ceiling from temperature-aware datasheet cutoffs."""
+    def charge_pack_vmax(self, temp_c: float | None) -> float:
+        """Pack charge ceiling from temperature-aware datasheet cutoffs.
+
+        Cold-charge limits are governed by the *coldest* cell, so callers
+        should pass ``t_min_c``. When temperature is unknown, pick the more
+        conservative (lower) ceiling instead of assuming "warm".
+        """
         warm = self.charge_cutoff_v_warm
         cold = self.charge_cutoff_v_cold
-        if t_max_c is not None and warm is not None and cold is not None:
-            return float(warm if t_max_c >= 20.0 else cold)
+        if warm is not None and cold is not None:
+            if temp_c is None:
+                return float(min(warm, cold))
+            return float(warm if temp_c >= 20.0 else cold)
         if warm is not None:
             return float(warm)
         if cold is not None:
@@ -64,10 +71,16 @@ class ModuleProfile:
         return float(self.pack_v_max)
 
     def discharge_pack_vmin(self, t_max_c: float | None) -> float:
-        """Pack discharge floor from temperature-aware datasheet cutoffs."""
+        """Pack discharge floor from temperature-aware datasheet cutoffs.
+
+        When temperature is unknown, pick the more conservative (higher)
+        floor so an unknown-but-hot pack is not over-discharged.
+        """
         cold = self.discharge_cutoff_v_cold
         hot = self.discharge_cutoff_v_hot
-        if t_max_c is not None and cold is not None and hot is not None:
+        if cold is not None and hot is not None:
+            if t_max_c is None:
+                return float(max(cold, hot))
             return float(hot if t_max_c > 30.0 else cold)
         if cold is not None:
             return float(cold)

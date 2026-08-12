@@ -129,6 +129,9 @@ def validate_step(step: Step, profile: ModuleProfile, max_el_a: float) -> list[s
                 "(pack_v_min / cell_v_min / soc_pct / ah_target)"
             )
         _validate_stop_abort(sid, stop, p.get("abort"), profile, e, mode="discharge")
+        to = p.get("timeout_s") or stop.get("timeout_s")
+        if to is not None and not _pos(to):
+            e.append(f"{sid}: timeout_s must be > 0 when set")
         meas = p.get("measure")
         if meas is not None and not (meas == "capacity_ah" or str(meas).startswith("capacity_")):
             e.append(f"{sid}: measure must be capacity_ah or capacity_* key")
@@ -237,6 +240,14 @@ def _validate_stop_abort(
         d = _num(abort["dtc_level_max"])
         if d is None or d < 0 or d > 4:
             e.append(f"{sid}: abort.dtc_level_max must be 0..4")
+    if "t_max_c" in abort:
+        tm = _num(abort["t_max_c"])
+        prof_tmax = getattr(profile, "t_max_c", None)
+        if tm is not None and prof_tmax is not None and tm > float(prof_tmax):
+            e.append(
+                f"{sid}: abort.t_max_c {tm} above profile t_max_c {prof_tmax} "
+                "— thermal abort would exceed the module rating"
+            )
 
 
 def validate_program(program: Program, profile: ModuleProfile, max_el_combined_a: float = 1020.0) -> list[str]:

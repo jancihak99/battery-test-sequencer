@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSpinBox,
     QSplitter,
@@ -56,7 +57,11 @@ from bts.ui.dashboard import LiveDashboard
 from bts.ui.diagnostics_tab import DiagnosticsTab
 from bts.ui.simulate_tab import SimulateTab
 from bts.ui.step_form import StepForm
-from bts.ui.theme import APP_STYLESHEET, TEXT_DIM
+from bts.ui.theme import (
+    APP_STYLESHEET,
+    TEXT_DIM,
+    card_style,
+)
 
 log = logging.getLogger(__name__)
 
@@ -81,12 +86,18 @@ class MainWindow(QMainWindow):
         self.resize(1400, 860)
         self._apply_window_icon()
 
+        # BMU frame-rate estimate (shown instead of an ever-growing frame count)
+        self._rx_rate = 0.0
+        self._rx_rate_count: int | None = None
+        self._rx_rate_mono: float | None = None
+
         self.program: Program | None = None
         self.program_path: Path | None = None
         self.engine: SequenceEngine | None = None
         self._bms = None
         self._ea = None
         self._active_profile = None
+        self._contactor_conflict_since: float | None = None
         self._hw_busy = False
         self._editor_dirty = False
         self._editor_row = -1
@@ -100,8 +111,13 @@ class MainWindow(QMainWindow):
         self._build_history_tab()
         self._build_settings_tab()
         self._build_diagnostics_tab()
+        self._wrap_tabs_scrollable()
         self._build_branding_bar()
         self._refresh_version_ui()
+        # Content minimums (schematic/dashboard/…) otherwise pin the window
+        # height so it can only shrink sideways. The scroll wrappers above let
+        # it shrink vertically; keep a small floor just for usability.
+        self.setMinimumSize(720, 420)
 
         self.engine_status.connect(self._on_engine_status)
         self.activity_line.connect(self._on_activity_line)
@@ -122,6 +138,26 @@ class MainWindow(QMainWindow):
         icon = _load_app_icon(self.cfg.root)
         if icon is not None:
             self.setWindowIcon(icon)
+
+    def _wrap_tabs_scrollable(self) -> None:
+        """Put each tab page inside a QScrollArea.
+
+        The tab pages carry large content minimum heights (schematic, live
+        dashboard, history…), which pin the window's minimum height so it can
+        only be resized sideways. Wrapping each page lets the window shrink
+        vertically, showing a scrollbar instead of blocking the resize.
+        """
+        pages = []
+        while self.tabs.count():
+            page = self.tabs.widget(0)
+            pages.append((page, self.tabs.tabIcon(0), self.tabs.tabText(0)))
+            self.tabs.removeTab(0)
+        for page, icon, text in pages:
+            area = QScrollArea()
+            area.setWidgetResizable(True)
+            area.setFrameShape(QFrame.NoFrame)
+            area.setWidget(page)
+            self.tabs.addTab(area, icon, text)
 
     def _build_branding_bar(self) -> None:
         """Subtle footer: company logo + version + internal-tool notice."""
@@ -205,18 +241,16 @@ class MainWindow(QMainWindow):
     def _build_run_tab(self) -> None:
         w = QWidget()
         layout = QVBoxLayout(w)
-        layout.setContentsMargins(12, 10, 12, 8)
-        layout.setSpacing(10)
+        layout.setContentsMargins(20, 18, 20, 14)
+        layout.setSpacing(16)
 
         # Toolbar card
         toolbar = QFrame()
         toolbar.setObjectName("toolbar")
-        toolbar.setStyleSheet(
-            "#toolbar { background:#ffffff; border:1px solid #d5dde5; border-radius:8px; }"
-        )
+        toolbar.setStyleSheet(card_style("toolbar"))
         top = QHBoxLayout(toolbar)
-        top.setContentsMargins(12, 10, 12, 10)
-        top.setSpacing(8)
+        top.setContentsMargins(16, 12, 16, 12)
+        top.setSpacing(10)
         self.program_combo = QComboBox()
         self.program_combo.setMinimumWidth(220)
         self.profile_label = QLabel("Profile: —")
@@ -226,7 +260,7 @@ class MainWindow(QMainWindow):
         self.serial_edit.setMinimumWidth(140)
         self.btn_connect = QPushButton("Připojit HW")
         self.btn_connect.setMinimumWidth(120)
-        self.btn_connect.setToolTip("Připojí / odpojí Kvaser + EA. Stav je i v pruhu pod toolbarem.")
+        self.btn_connect.setToolTip("Připojí / odpojí Kvaser + EA. Stav je v pruhu nad toolbarem.")
         self.btn_start = QPushButton("Start")
         self.btn_start.setObjectName("btnPrimary")
         self.btn_stop = QPushButton("Stop (Esc)")
@@ -253,25 +287,24 @@ class MainWindow(QMainWindow):
         top.addWidget(self.btn_start)
         top.addWidget(self.btn_stop)
         top.addWidget(self.btn_clear_dtc)
-        layout.addWidget(toolbar)
 
-        # Large HW status strip — readable on remote desktop
+        # Large HW status strip — readable on remote desktop.
+        # Status goes ABOVE the toolbar (status first, then the controls).
         self.lbl_hw_banner = QLabel("HW: odpojeno — klikni Připojit HW")
         self.lbl_hw_banner.setAlignment(Qt.AlignCenter)
         self.lbl_hw_banner.setWordWrap(True)
         self.lbl_hw_banner.setMinimumHeight(40)
         self.lbl_hw_banner.setStyleSheet(self._hw_banner_style("off"))
         layout.addWidget(self.lbl_hw_banner)
+        layout.addWidget(toolbar)
 
         # Link strip: bus open ≠ BMU talking
         link_bar = QFrame()
         link_bar.setObjectName("linkBar")
-        link_bar.setStyleSheet(
-            "#linkBar { background:#f4f7fa; border:1px solid #d5dde5; border-radius:8px; }"
-        )
+        link_bar.setStyleSheet(card_style("linkBar"))
         link_row = QHBoxLayout(link_bar)
-        link_row.setContentsMargins(12, 8, 12, 8)
-        link_row.setSpacing(16)
+        link_row.setContentsMargins(16, 12, 16, 12)
+        link_row.setSpacing(20)
         self.lbl_link_bms = QLabel("BMS: not connected")
         self.lbl_link_ea = QLabel("EA: not connected")
         self.lbl_link_bms.setStyleSheet(f"color:{TEXT_DIM};font-weight:600;")
@@ -288,15 +321,14 @@ class MainWindow(QMainWindow):
         # Compact status column — content top-aligned
         left = QFrame()
         left.setObjectName("sidePanel")
-        left.setStyleSheet(
-            "#sidePanel { background:#ffffff; border:1px solid #d5dde5; border-radius:8px; }"
-        )
+        left.setStyleSheet(card_style("sidePanel"))
         left_outer = QVBoxLayout(left)
-        left_outer.setContentsMargins(12, 12, 12, 12)
+        left_outer.setContentsMargins(16, 16, 16, 16)
         left_outer.setSpacing(0)
         lf = QFormLayout()
         lf.setContentsMargins(0, 0, 0, 0)
-        lf.setSpacing(6)
+        lf.setSpacing(10)
+        lf.setHorizontalSpacing(14)
         lf.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         lf.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         self.lbl_run_state = QLabel("idle")
@@ -362,18 +394,16 @@ class MainWindow(QMainWindow):
     def _build_editor_tab(self) -> None:
         w = QWidget()
         layout = QVBoxLayout(w)
-        layout.setContentsMargins(12, 10, 12, 8)
-        layout.setSpacing(10)
+        layout.setContentsMargins(20, 18, 20, 14)
+        layout.setSpacing(16)
 
         # Program-level meta (applies to all steps)
         meta_box = QFrame()
         meta_box.setObjectName("progMeta")
-        meta_box.setStyleSheet(
-            "#progMeta { background:#ffffff; border:1px solid #d5dde5; border-radius:8px; }"
-        )
+        meta_box.setStyleSheet(card_style("progMeta"))
         meta_outer = QVBoxLayout(meta_box)
-        meta_outer.setContentsMargins(12, 10, 12, 10)
-        meta_outer.setSpacing(6)
+        meta_outer.setContentsMargins(16, 14, 16, 14)
+        meta_outer.setSpacing(10)
         meta_title = QLabel("Program")
         meta_title.setStyleSheet(f"color:{TEXT_DIM};font-weight:600;font-size:11px;")
         meta_outer.addWidget(meta_title)
@@ -404,9 +434,10 @@ class MainWindow(QMainWindow):
         layout.addWidget(meta_box)
 
         split = QHBoxLayout()
-        split.setSpacing(10)
+        split.setSpacing(16)
 
         left = QVBoxLayout()
+        left.setSpacing(10)
         steps_lab = QLabel("Steps")
         steps_lab.setStyleSheet(f"color:{TEXT_DIM};font-weight:600;font-size:11px;")
         left.addWidget(steps_lab)
@@ -416,6 +447,7 @@ class MainWindow(QMainWindow):
         btns = QHBoxLayout()
         for label, slot in [
             ("Add", self._add_step),
+            ("Duplikovat", self._duplicate_step),
             ("Remove", self._remove_step),
             ("Up", self._move_up),
             ("Down", self._move_down),
@@ -440,6 +472,7 @@ class MainWindow(QMainWindow):
         left.addLayout(file_btns)
 
         right = QVBoxLayout()
+        right.setSpacing(10)
         step_lab = QLabel("Selected step")
         step_lab.setStyleSheet(f"color:{TEXT_DIM};font-weight:600;font-size:11px;")
         right.addWidget(step_lab)
@@ -455,24 +488,50 @@ class MainWindow(QMainWindow):
     def _build_simulate_tab(self) -> None:
         self.simulate_tab = SimulateTab()
         self.simulate_tab.set_program_provider(self._program_for_simulate)
+        self.simulate_tab.set_program_list_provider(self._list_programs_for_sim)
+        self.simulate_tab.set_file_loader(self._load_program_and_profile)
+        self.simulate_tab.refresh_programs()
         self.tabs.addTab(self.simulate_tab, "Simulace")
+
+    def _list_programs_for_sim(self):
+        """(label, path) of every stepfile — for the Simulate program picker."""
+        items = []
+        for p in list_programs(self.cfg.programs_path):
+            label = f"[DEV] {p.stem}" if "dev" in p.parts else p.stem
+            items.append((label, p))
+        return items
+
+    def _load_program_and_profile(self, path):
+        """Load a stepfile + its module profile for offline simulation."""
+        program = load_program(Path(path))
+        profile = None
+        try:
+            profile = load_profile(
+                self.cfg.profiles_path / f"{program.meta.module_profile}.yaml"
+            )
+        except Exception:
+            log.exception("Simulate: profile load failed for %s", path)
+        return program, profile
 
     def _program_for_simulate(self):
         """Snapshot editor program + profile for offline preview."""
         if not self.program:
             return None, None
         self._sync_meta_into_program()
+        # Preview only: apply the current step-form edit to a COPY, never the
+        # live program (mutating it silently skips the unsaved-changes prompt).
+        snapshot = copy.deepcopy(self.program)
         row = self.step_list.currentRow()
         if row >= 0:
             try:
-                self.program.steps[row] = self.step_form.build_step()
+                snapshot.steps[row] = self.step_form.build_step()
             except Exception:
                 pass
         try:
             profile = self._current_profile()
         except Exception:
             profile = self._active_profile
-        return copy.deepcopy(self.program), profile
+        return snapshot, profile
 
     def _build_history_tab(self) -> None:
         w = QWidget()
@@ -1078,11 +1137,17 @@ class MainWindow(QMainWindow):
                 if data and Path(data).resolve() == keep_res:
                     select_idx = i
                     break
-        self.program_combo.blockSignals(False)
         if self.program_combo.count():
+            # Keep signals blocked so setCurrentIndex does not also fire
+            # _on_program_selected — we call it once explicitly below.
             self.program_combo.setCurrentIndex(select_idx)
+            self.program_combo.blockSignals(False)
             self._on_program_selected(select_idx)
+        else:
+            self.program_combo.blockSignals(False)
         self._refresh_history()
+        if hasattr(self, "simulate_tab"):
+            self.simulate_tab.refresh_programs()
 
     def _mark_editor_dirty(self) -> None:
         self._editor_dirty = True
@@ -1279,6 +1344,28 @@ class MainWindow(QMainWindow):
         self._sync_editor_from_program()
         self.step_list.setCurrentRow(len(self.program.steps) - 1)
 
+    def _duplicate_step(self) -> None:
+        """Insert a copy of the selected step right below it (unique id)."""
+        if not self.program:
+            return
+        row = self.step_list.currentRow()
+        if row < 0 or row >= len(self.program.steps):
+            return
+        self._commit_editor_row(row)
+        src = self.program.steps[row]
+        existing = {s.id for s in self.program.steps}
+        base = f"{src.id}_copy"
+        new_id = base
+        n = 2
+        while new_id in existing:
+            new_id = f"{base}{n}"
+            n += 1
+        clone = Step(id=new_id, type=src.type, params=copy.deepcopy(src.params))
+        self.program.steps.insert(row + 1, clone)
+        self._editor_dirty = True
+        self._sync_editor_from_program()
+        self.step_list.setCurrentRow(row + 1)
+
     def _remove_step(self) -> None:
         if not self.program:
             return
@@ -1423,30 +1510,20 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Validation", "OK — program is consistent")
 
     def _hw_banner_style(self, kind: str) -> str:
-        # High-contrast fills for RDP / small remote windows
-        styles = {
-            "off": (
-                "background:#5c6770;color:#ffffff;font-weight:800;font-size:15px;"
-                "padding:10px 14px;border-radius:8px;border:2px solid #3d454c;"
-            ),
-            "busy": (
-                "background:#9a6700;color:#ffffff;font-weight:800;font-size:15px;"
-                "padding:10px 14px;border-radius:8px;border:2px solid #7a5200;"
-            ),
-            "ok": (
-                "background:#1a7f37;color:#ffffff;font-weight:800;font-size:15px;"
-                "padding:10px 14px;border-radius:8px;border:2px solid #0f5c26;"
-            ),
-            "partial": (
-                "background:#bf8700;color:#ffffff;font-weight:800;font-size:15px;"
-                "padding:10px 14px;border-radius:8px;border:2px solid #8a6200;"
-            ),
-            "bad": (
-                "background:#cf222e;color:#ffffff;font-weight:800;font-size:15px;"
-                "padding:10px 14px;border-radius:8px;border:2px solid #8b151c;"
-            ),
+        # Solid, high-contrast status fills (readable over RDP) — modern rounding,
+        # no heavy dark outline, a little more breathing room.
+        base = (
+            "color:#ffffff;font-weight:800;font-size:15px;"
+            "padding:12px 18px;border-radius:6px;border:none;"
+        )
+        fills = {
+            "off": "background:#6b7787;",
+            "busy": "background:#c98a00;",
+            "ok": "background:#1f8a5b;",
+            "partial": "background:#c99400;",
+            "bad": "background:#c0392b;",
         }
-        return styles.get(kind, styles["off"])
+        return base + fills.get(kind, fills["off"])
 
     def _signal_attention(self, *, ok: bool) -> None:
         """Beep + flash taskbar — helps when watching the PC over RDP."""
@@ -1478,9 +1555,9 @@ class MainWindow(QMainWindow):
         if live:
             self.btn_connect.setText("Odpojit HW")
             self.btn_connect.setStyleSheet(
-                "QPushButton { background:#1a7f37; color:#fff; font-weight:700; "
-                "padding:6px 14px; border-radius:6px; border:2px solid #0f5c26; }"
-                "QPushButton:hover { background:#146c2e; }"
+                "QPushButton { background:#1f8a5b; color:#fff; font-weight:700; "
+                "padding:8px 16px; border-radius:4px; border:none; }"
+                "QPushButton:hover { background:#1a7a4f; }"
             )
             self.btn_connect.setToolTip("HW je připojené — kliknutím odpojíš BMS + EA")
         else:
@@ -1683,11 +1760,20 @@ class MainWindow(QMainWindow):
             try:
                 self._bms.set_desired_state(DesiredState.IDLE)
                 t_idle = time.monotonic()
+                idle_ok = False
                 while time.monotonic() - t_idle < 8.0:
                     if self._bms.telemetry().operating_state == BmuState.IDLE:
+                        idle_ok = True
                         break
                     QApplication.processEvents()
                     time.sleep(0.2)
+                if not idle_ok:
+                    # Current already confirmed ≈0 above, so this is electrically
+                    # safe to close, but the BMU never reported IDLE — record it.
+                    self._log(
+                        "POZOR: BMU nepotvrdil IDLE do 8 s (proud byl ≈0) — "
+                        "zkontroluj stav stykačů."
+                    )
             except Exception:
                 log.exception("BMS IDLE on quit failed")
                 return False
@@ -1727,6 +1813,22 @@ class MainWindow(QMainWindow):
             pass
         event.accept()
 
+    def _update_rx_rate(self, rx_count: int) -> float:
+        """Smoothed BMU frame rate (frames/s) from rx_count deltas over time."""
+        now = time.monotonic()
+        if self._rx_rate_count is None or self._rx_rate_mono is None:
+            self._rx_rate_count = rx_count
+            self._rx_rate_mono = now
+            return self._rx_rate
+        dt = now - self._rx_rate_mono
+        if dt >= 0.4:  # sample window — long enough to be stable, short enough to react
+            inst = max(0.0, rx_count - self._rx_rate_count) / dt
+            # exponential smoothing to avoid the number jumping around
+            self._rx_rate = inst if self._rx_rate <= 0 else 0.6 * self._rx_rate + 0.4 * inst
+            self._rx_rate_count = rx_count
+            self._rx_rate_mono = now
+        return self._rx_rate
+
     def _set_link_labels(self, bms, ea) -> None:
         ok = "#1a7f37"
         warn = "#9a6700"
@@ -1736,17 +1838,21 @@ class MainWindow(QMainWindow):
         bms_ok = False
         bms_partial = False
         if bms is None:
+            self._rx_rate_count = None  # reset rate estimator when link drops
             self.lbl_link_bms.setText("BMS: not connected")
             self.lbl_link_bms.setStyleSheet(f"color:{dim};font-weight:600;")
         elif getattr(bms, "rx_count", 0) > 0 and bms.connected:
             age = time.monotonic() - bms.last_rx_s if bms.last_rx_s > 0 else 999
             cells = len([v for v in (bms.cell_voltages or []) if v == v])  # not NaN
             state = bms.operating_state.name if bms.operating_state else "?"
+            rate = self._update_rx_rate(bms.rx_count)
             if age <= 1.5:
+                rate_txt = f"{rate:.0f} fr/s" if rate >= 1 else "…"
                 self.lbl_link_bms.setText(
-                    f"BMS: RX OK · {bms.rx_count} frames · {state}"
+                    f"BMS: RX OK · {rate_txt} · {state}"
                     + (f" · {cells} cells" if cells else " · waiting for cells")
                 )
+                self.lbl_link_bms.setToolTip(f"Celkem přijato {bms.rx_count} rámců od připojení")
                 self.lbl_link_bms.setStyleSheet(f"color:{ok};font-weight:600;")
                 bms_ok = True
             else:
@@ -1754,6 +1860,7 @@ class MainWindow(QMainWindow):
                 self.lbl_link_bms.setStyleSheet(f"color:{warn};font-weight:600;")
                 bms_partial = True
         elif bms.connected:
+            self._rx_rate_count = None
             self.lbl_link_bms.setText(
                 "BMS: Kvaser open — no BMU frames (External CAN / bitrate / address?)"
             )
@@ -1790,9 +1897,15 @@ class MainWindow(QMainWindow):
             self.lbl_link_ea.setStyleSheet(f"color:{bad};font-weight:600;")
 
         live = self._bms is not None and self._ea is not None
+        run_active = (
+            self.engine is not None
+            and self.engine.status().run_state.name == "RUNNING"
+        )
         self._update_connect_button(live)
         if not live:
             self._set_hw_banner("off", "HW: odpojeno — klikni Připojit HW")
+        elif run_active:
+            self._set_hw_banner("ok", "TEST BĚŽÍ — BMS RX OK · EA OK")
         elif bms_ok and ea_ok:
             self._set_hw_banner("ok", "HW PŘIPOJENO — BMS RX OK · EA OK  (můžeš Start)")
         elif ea_ok and bms_partial:
@@ -2024,6 +2137,29 @@ class MainWindow(QMainWindow):
             f"Previous: {before}",
         )
 
+    def _check_contactor_conflict(self, bms) -> None:
+        """Warn when we commanded the mains OPEN but another app on the bus keeps them
+        closed. Debounced ~3 s so a normal power-down (STOPPING waits for current to
+        decay) doesn't trip it."""
+        conflict_now = bool(
+            bms is not None and bms.connected and bms.external_contactor_override
+        )
+        active = False
+        if conflict_now:
+            if self._contactor_conflict_since is None:
+                self._contactor_conflict_since = time.monotonic()
+            elif time.monotonic() - self._contactor_conflict_since >= 3.0:
+                active = True
+        else:
+            self._contactor_conflict_since = None
+        self.dashboard.schematic.set_contactor_conflict(active)
+        if active:
+            self.statusBar().showMessage(
+                "⚠ Stykače drží sepnuté jiná aplikace — apka poslala pokyn rozepnout, "
+                "ale BMU je řízené externě",
+                4000,
+            )
+
     def _refresh_live(self) -> None:
         bms = self._bms.telemetry() if self._bms is not None else None
         # While a sequence owns the EA COM ports, don't poll SCPI from the UI
@@ -2041,14 +2177,17 @@ class MainWindow(QMainWindow):
                 ea = self._ea.telemetry()
         self.dashboard.update_live(bms, ea)
         self._set_link_labels(bms, ea)
+        self._check_contactor_conflict(bms)
 
         if bms is not None:
             self.lbl_bms_state.setText(
                 bms.operating_state.name if bms.operating_state else "—"
             )
+            v_txt = f"{bms.pack_voltage_v:.2f} V" if bms.pack_voltage_v is not None else "— V"
+            i_txt = f"{bms.pack_current_a:.1f} A" if bms.pack_current_a is not None else "— A"
             self.lbl_pack.setText(
-                f"{bms.pack_voltage_v:.2f} V / {bms.pack_current_a:.1f} A"
-                if bms.pack_voltage_v is not None
+                f"{v_txt} / {i_txt}"
+                if (bms.pack_voltage_v is not None or bms.pack_current_a is not None)
                 else "—"
             )
             ch = bms.charge_current_limit_a

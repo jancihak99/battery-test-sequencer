@@ -4,10 +4,7 @@ __pycache__/
 *.egg-info/
 dist/
 build/
-runs/*.csv
-runs/*.json
-runs/*.html
-runs/*.log
+runs/
 .pytest_cache/
 .github_token
 *.token

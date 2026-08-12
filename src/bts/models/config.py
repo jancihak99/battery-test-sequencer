@@ -109,13 +109,13 @@ def load_config(path: Path | None = None, root: Path | None = None) -> AppConfig
     # Prefer `el` (master of MS pair). Legacy el1/el2 configs: use el1 as master.
     el_raw = ea_raw.get("el") or ea_raw.get("el1") or {"name": "EL_MS"}
     if "el" not in ea_raw and "el1" in ea_raw and "el2" in ea_raw:
-        # Old split config: promote combined current limit if both listed
+        # Old split config: the MS pair's combined limit is el1 + el2.
+        # Override el1's single value (setdefault would keep it — a no-op bug).
         try:
             el_raw = dict(el_raw)
-            el_raw.setdefault(
-                "max_current_a",
+            el_raw["max_current_a"] = (
                 float(ea_raw["el1"].get("max_current_a", 510))
-                + float(ea_raw["el2"].get("max_current_a", 510)),
+                + float(ea_raw["el2"].get("max_current_a", 510))
             )
             el_raw.setdefault("name", "EL_MS_from_el1_el2")
         except Exception:

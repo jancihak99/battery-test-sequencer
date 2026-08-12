@@ -9,7 +9,7 @@ from PySide6.QtGui import QColor, QFont, QPainter, QPen, QRadialGradient
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from bts.models.telemetry import BmsTelemetry, BmuState, EaTelemetry
-from bts.ui.theme import ACCENT, BORDER, CHART_BG, OK, TEXT, TEXT_DIM
+from bts.ui.theme import ACCENT, BG_PANEL, BORDER, DANGER, OK, TEXT, TEXT_DIM
 
 # Animation reference: today's full particle speed == 6C. 0 A = frozen.
 _MAX_C_RATE = 6.0
@@ -70,6 +70,7 @@ class WiringSchematic(QWidget):
 
         self._bms: BmsTelemetry | None = None
         self._ea: EaTelemetry | None = None
+        self._contactor_conflict = False  # debounced flag set by the main window
         self._capacity_ah = 70.0
         self._phase = 0.0
         self._glow_phase = 0.0
@@ -119,11 +120,18 @@ class WiringSchematic(QWidget):
         self._ea = ea
         self.update()
 
+    def set_contactor_conflict(self, active: bool) -> None:
+        """Flag (debounced by the caller): app commanded OPEN but the mains are still
+        held closed by another application on the CAN bus."""
+        if active != self._contactor_conflict:
+            self._contactor_conflict = active
+            self.update()
+
     def paintEvent(self, _event) -> None:  # noqa: N802
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         w, h = self.width(), self.height()
-        p.fillRect(self.rect(), QColor(CHART_BG))
+        p.fillRect(self.rect(), QColor(BG_PANEL))   # blend into the white card
 
         # Soft top wash when power is flowing
         if self._flow_frac > 0.02:
@@ -152,7 +160,7 @@ class WiringSchematic(QWidget):
 
         bms = self._bms
         ea = self._ea
-        st = bms.contactors_effective if bms else None
+        st = bms.contactors_for_display if bms else None
         main_pos = bool(st and st.main_pos)
         main_neg = bool(st and st.main_neg)
         precharge = bool(st and st.precharge)
@@ -317,18 +325,23 @@ class WiringSchematic(QWidget):
         )
 
         # Status chip + caption
-        p.setFont(QFont("Segoe UI", 8))
-        caption = self._caption(
-            charging, discharging, main_pos, main_neg, precharge, connected_bms, amps, crate
-        )
-        p.setPen(QColor(TEXT_DIM))
+        if self._contactor_conflict:
+            p.setFont(QFont("Segoe UI", 8, QFont.Bold))
+            p.setPen(QColor(DANGER))
+            caption = "⚠ Stykače drží SEPNUTÉ jiná aplikace — apka poslala pokyn ROZEPNOUT"
+        else:
+            p.setFont(QFont("Segoe UI", 8))
+            p.setPen(QColor(TEXT_DIM))
+            caption = self._caption(
+                charging, discharging, main_pos, main_neg, precharge, connected_bms, amps, crate
+            )
         p.drawText(QRectF(8, h - 20, w - 16, 16), Qt.AlignLeft | Qt.AlignVCenter, caption)
 
     def _is_charging(self) -> bool:
         ea = self._ea
         bms = self._bms
         pack_i = float(bms.pack_current_a) if bms and bms.pack_current_a is not None else 0.0
-        st = bms.contactors_effective if bms else None
+        st = bms.contactors_for_display if bms else None
         main_ok = bool(st and st.main_pos and st.main_neg)
         if ea and ea.connected and (ea.psi_output_on or abs(ea.psi_current_a) > 0.5):
             return True
@@ -344,7 +357,7 @@ class WiringSchematic(QWidget):
         ea = self._ea
         bms = self._bms
         pack_i = float(bms.pack_current_a) if bms and bms.pack_current_a is not None else 0.0
-        st = bms.contactors_effective if bms else None
+        st = bms.contactors_for_display if bms else None
         main_ok = bool(st and st.main_pos and st.main_neg)
         if ea and ea.connected and (ea.el_input_on or abs(ea.el_current_a) > 0.5):
             return True
@@ -442,14 +455,14 @@ class WiringSchematic(QWidget):
         border = accent if active else QColor(BORDER)
         p.setPen(QPen(border, 1.8 if active else 1.2))
         p.setBrush(bg)
-        p.drawRoundedRect(rect, 7, 7)
+        p.drawRoundedRect(rect, 4, 4)
         if active:
             pulse = 0.55 + 0.45 * (0.5 + 0.5 * math.sin(self._glow_phase * (1.0 + flow_frac)))
             glow = QColor(accent)
             glow.setAlpha(int((22 + 40 * flow_frac) * pulse))
             p.setPen(Qt.NoPen)
             p.setBrush(glow)
-            p.drawRoundedRect(rect.adjusted(2, 2, -2, -2), 5, 5)
+            p.drawRoundedRect(rect.adjusted(2, 2, -2, -2), 3, 3)
 
         p.setPen(QColor(TEXT))
         p.setFont(QFont("Segoe UI", 9, QFont.DemiBold))
@@ -480,20 +493,20 @@ class WiringSchematic(QWidget):
     ) -> None:
         p.setPen(QPen(QColor(BORDER), 1.3))
         p.setBrush(QColor("#ffffff"))
-        p.drawRoundedRect(rect, 8, 8)
+        p.drawRoundedRect(rect, 4, 4)
 
         if connected and state == BmuState.READY and main_pos and main_neg:
             ready_glow = QColor(OK)
             ready_glow.setAlpha(int(18 + 14 * (0.5 + 0.5 * math.sin(pulse))))
             p.setPen(Qt.NoPen)
             p.setBrush(ready_glow)
-            p.drawRoundedRect(rect.adjusted(3, 3, -3, -3), 6, 6)
+            p.drawRoundedRect(rect.adjusted(3, 3, -3, -3), 3, 3)
         elif connected and state == BmuState.PRE_CHARGE:
             pc = QColor("#d4a017")
             pc.setAlpha(int(20 + 16 * (0.5 + 0.5 * math.sin(pulse * 1.4))))
             p.setPen(Qt.NoPen)
             p.setBrush(pc)
-            p.drawRoundedRect(rect.adjusted(3, 3, -3, -3), 6, 6)
+            p.drawRoundedRect(rect.adjusted(3, 3, -3, -3), 3, 3)
 
         p.setPen(QColor(TEXT_DIM))
         p.setFont(QFont("Segoe UI", 8, QFont.DemiBold))
@@ -571,14 +584,14 @@ class WiringSchematic(QWidget):
         accent = QColor(OK) if charging else (QColor("#c47a3a") if discharging else QColor(ACCENT))
         p.setPen(QPen(accent if (charging or discharging) else QColor(BORDER), 1.6))
         p.setBrush(QColor("#ffffff"))
-        p.drawRoundedRect(rect, 8, 8)
+        p.drawRoundedRect(rect, 4, 4)
 
         if (charging or discharging) and flow_frac > 0:
             g = QColor(accent)
             g.setAlpha(int(18 + 36 * flow_frac * (0.5 + 0.5 * math.sin(self._glow_phase))))
             p.setPen(Qt.NoPen)
             p.setBrush(g)
-            p.drawRoundedRect(rect.adjusted(2, 2, -2, -2), 6, 6)
+            p.drawRoundedRect(rect.adjusted(2, 2, -2, -2), 3, 3)
 
         bx = rect.left() + 14
         by = rect.center().y() - 10

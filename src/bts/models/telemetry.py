@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import IntEnum
 from typing import Any
 
@@ -66,7 +66,6 @@ class BmsTelemetry:
     cell_v_max: float | None = None
     cell_vmin_id: int | None = None
     cell_vmax_id: int | None = None
-    temps_c: list[float] = field(default_factory=list)
     temperatures_c: list[float] = field(default_factory=list)
     cell_balancing: list[bool] = field(default_factory=list)
     t_min_c: float | None = None
@@ -90,6 +89,53 @@ class BmsTelemetry:
         if st.main_pos or st.main_neg or st.precharge or st.mid_pack or st.aux:
             return st
         return self.contactor_cmd
+
+    @property
+    def mains_energized(self) -> bool:
+        """Physical proof the main contactors are closed, independent of the bitmaps.
+
+        The switched (load-side) pack voltage tracking the unswitched pack voltage means
+        current can flow through the mains — the same comparison the BMU itself uses for
+        its contactor-weld / closed diagnostics (see FC "switched ≠ unswitched"). Robust
+        when the command/status bitmaps are unreliable, e.g. a second ACU on the bus
+        closes the contactors while our IDLE heartbeat keeps flipping the command bitmap
+        back to open on an un-instrumented pack.
+        """
+        vp = self.pack_voltage_v
+        vs = self.pack_voltage_switched_v
+        if vp is None or vs is None or vp <= 1.0:
+            return False
+        return vs >= 0.9 * vp
+
+    @property
+    def contactors_for_display(self) -> ContactorBits:
+        """UI-only view of contactors_effective, with mains forced closed when the
+        switched pack voltage proves they are (see mains_energized).
+
+        Fixes the case where an independent tool (CANking, service tool) closes the
+        contactors via the BMU: our idle heartbeat fights it, so the reported command
+        bitmap flickers to open and the pack shows OPEN even though it is physically
+        connected. Display only — control/engine logic keeps using contactors_effective.
+        Caveat: at rest a precharge-only bus also equalises, so this can read the mains
+        as closed during the brief precharge window; acceptable for a status indicator.
+        """
+        eff = self.contactors_effective
+        if self.mains_energized and not (eff.main_pos and eff.main_neg):
+            return replace(eff, main_pos=True, main_neg=True)
+        return eff
+
+    @property
+    def external_contactor_override(self) -> bool:
+        """We asked the BMU to open the mains (desired ≠ READY) yet the switched bus is
+        still live — i.e. another controller on the CAN bus is holding the contactors
+        closed against our command. None desired_state = unknown, so we don't claim it.
+        Callers should debounce this: a normal power-down keeps the bus live for a few
+        seconds while STOPPING waits for current to decay.
+        """
+        ds = self.desired_state
+        if ds is None or ds == DesiredState.READY:
+            return False
+        return self.mains_energized
 
 
 @dataclass

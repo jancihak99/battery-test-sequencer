@@ -325,11 +325,14 @@ def discover_can(
         if best and best.frame_count >= 5:
             break
 
-    # 2) Active: tool SA fixed, BMU candidates 0x00–0x03
-    if best is None:
+    # 2) Active: tool SA fixed, BMU candidates 0x00–0x03.
+    # Also run when passive only saw a weak/low-confidence result (< 5 frames),
+    # so a single stray matching frame can't suppress the active scan.
+    if best is None or best.frame_count < 5:
         _prog(
-            f"No passive traffic — scanning BMU 0x00–0x03 (tool 0x{app:02X})…"
+            f"Weak/no passive traffic — scanning BMU 0x00–0x03 (tool 0x{app:02X})…"
         )
+        active_best = None
         for ch in channels:
             for br in bitrates:
                 hit = _active_address_scan(
@@ -341,10 +344,13 @@ def discover_can(
                     progress=_prog,
                 )
                 if hit is not None:
-                    best = hit
+                    active_best = hit
                     break
-            if best is not None:
+            if active_best is not None:
                 break
+        # Active result (a live BMU answered a request) beats a weak passive one.
+        if active_best is not None:
+            best = active_best
 
     if best is None or not best.ok:
         return CanDiscoverResult(

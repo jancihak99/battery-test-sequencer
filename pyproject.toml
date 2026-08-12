@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "battery-test-sequencer"
-version = "0.3.11"
+version = "0.3.12"
 description = "Step-file sequencer for EA PSI/EL and Clayton/Altairnano BMS capacity tests"
 readme = "README.md"
 requires-python = ">=3.10"

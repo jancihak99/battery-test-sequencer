@@ -41,15 +41,15 @@ class Panel(QFrame):
         super().__init__(parent)
         self.setObjectName("dashPanel")
         self.setStyleSheet(
-            f"#dashPanel {{ background: {BG_PANEL}; border: 1px solid {BORDER}; border-radius: 8px; }}"
+            f"#dashPanel {{ background: {BG_PANEL}; border: 1px solid {BORDER}; border-radius: 6px; }}"
         )
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(12, 8, 12, 10)
-        lay.setSpacing(6)
+        lay.setContentsMargins(16, 12, 16, 14)
+        lay.setSpacing(10)
         lab = QLabel(title)
         lab.setStyleSheet(
-            f"color: {TEXT_DIM}; font-weight: 600; font-size: 11px;"
+            f"color: {TEXT_DIM}; font-weight: 700; font-size: 11px;"
         )
         lay.addWidget(lab)
         lay.addWidget(body)
@@ -97,7 +97,7 @@ class CellVoltageScale(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         w = self.width()
-        p.fillRect(self.rect(), QColor(CHART_BG))
+        p.fillRect(self.rect(), QColor(BG_PANEL))   # blend into the white card
 
         pad_l, pad_r = 44, 44
         y_line = 26
@@ -141,9 +141,9 @@ class CellVoltageScale(QWidget):
         vmin_id = self._vmin_id
         vmax_id = self._vmax_id
         if vmin_id is None:
-            vmin_id = next(i for i, v in self._cells if abs(v - vmin) < 1e-6)
+            vmin_id = next((i for i, v in self._cells if abs(v - vmin) < 1e-6), None)
         if vmax_id is None:
-            vmax_id = next(i for i, v in self._cells if abs(v - vmax) < 1e-6)
+            vmax_id = next((i for i, v in self._cells if abs(v - vmax) < 1e-6), None)
 
         p.setPen(QPen(QColor("#b0bac4"), 1))
         for idx, v in self._cells:
@@ -184,33 +184,33 @@ class MetricTile(QFrame):
         self._unit = unit
         self._emphasize = emphasize
         self.setObjectName("metricTile")
-        self.setStyleSheet(
-            f"#metricTile {{ background:{CHART_BG}; border:1px solid {BORDER}; border-radius:6px; }}"
-        )
+        # Transparent: tiles read as stat columns on the white card, not gray
+        # boxes nested inside it.
+        self.setStyleSheet("#metricTile { background: transparent; border: none; }")
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(10, 8, 10, 8)
-        lay.setSpacing(2)
+        lay.setContentsMargins(6, 6, 6, 6)
+        lay.setSpacing(4)
         self.title_lab = QLabel(title)
         self.title_lab.setStyleSheet(f"color:{TEXT_DIM};font-size:11px;")
         self.value_lab = QLabel("—")
         if emphasize:
             self.value_lab.setStyleSheet(
-                f"color:{ACCENT};font-size:28px;font-weight:700;"
+                f"color:{ACCENT};font-size:32px;font-weight:700;"
             )
-            self.setMinimumHeight(78)
+            self.setMinimumHeight(92)
         else:
             self.value_lab.setStyleSheet(
-                f"color:{TEXT};font-size:16px;font-weight:600;"
+                f"color:{TEXT};font-size:17px;font-weight:600;"
             )
-            self.setMinimumHeight(58)
+            self.setMinimumHeight(66)
         self.bar = QProgressBar()
         self.bar.setTextVisible(False)
         self.bar.setFixedHeight(6)
         self.bar.setRange(0, 1000)
         self.bar.setValue(0)
         self.bar.setStyleSheet(
-            f"QProgressBar {{ background:#ffffff; border:1px solid {BORDER}; border-radius:3px; }}"
-            f"QProgressBar::chunk {{ background:{ACCENT}; border-radius:2px; }}"
+            f"QProgressBar {{ background:{CHART_BG}; border:none; border-radius:3px; }}"
+            f"QProgressBar::chunk {{ background:{ACCENT}; border-radius:3px; }}"
         )
         lay.addWidget(self.title_lab)
         lay.addWidget(self.value_lab)
@@ -245,8 +245,8 @@ class MetricTile(QFrame):
             else:
                 chunk = ACCENT
             self.bar.setStyleSheet(
-                f"QProgressBar {{ background:#ffffff; border:1px solid {BORDER}; border-radius:3px; }}"
-                f"QProgressBar::chunk {{ background:{chunk}; border-radius:2px; }}"
+                f"QProgressBar {{ background:{CHART_BG}; border:none; border-radius:3px; }}"
+                f"QProgressBar::chunk {{ background:{chunk}; border-radius:3px; }}"
             )
         else:
             self.bar.setValue(0)
@@ -318,7 +318,7 @@ class ContactorPanel(QWidget):
             self._pills[key] = pill
 
     def update_contactors(self, bms: BmsTelemetry) -> None:
-        st = bms.contactors_effective
+        st = bms.contactors_for_display
         for key, closed in [
             ("main_pos", st.main_pos),
             ("main_neg", st.main_neg),
@@ -395,7 +395,7 @@ class LiveDashboard(QWidget):
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(8)
+        root.setSpacing(14)
 
         self.progress = RunProgressPanel()
         root.addWidget(self.progress)
@@ -405,7 +405,7 @@ class LiveDashboard(QWidget):
 
         # Pack glance: big SOC + pack V + temperature
         metrics = QHBoxLayout()
-        metrics.setSpacing(8)
+        metrics.setSpacing(14)
         self.tile_soc = MetricTile("State of charge (SOC)", "%", emphasize=True)
         self.tile_pack = MetricTile("Pack voltage", "V")
         self.tile_temp = MetricTile("Cell temperature (max)", "°C")

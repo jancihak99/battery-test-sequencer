@@ -157,7 +157,7 @@ def traces_from_csv_rows(rows: list[dict[str, Any]], step_types: dict[str, str] 
                 t_s=rel,
                 pack_v=_f(row.get("pack_v")),
                 pack_i=_f(row.get("pack_i")),
-                ea_v=ea_v if ea_v else _f(row.get("pack_v")),
+                ea_v=ea_v if ea_v is not None else _f(row.get("pack_v")),
                 ea_i=ea_i,
                 soc=_f(row.get("soc")),
                 t_max_c=_f(row.get("t_max")),

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import logging
 import random
 import struct
@@ -28,6 +29,17 @@ PACK_VOLTAGE_RES = 1.0 / 16.0  # V/bit (signed)
 CELL_RES = 1.0 / 8192.0  # V/bit (unsigned), valid ~0–4 V
 TEMP_RES = 1.0 / 64.0  # °C/bit (signed)
 SENSOR_ERROR_MIN = 0x7F00  # 0x7F00–0x7FFF = invalid / LMU error codes
+SENSOR_ERROR_MAX = 0x7FFF  # inclusive top of the invalid window
+
+
+def _is_sensor_error(raw_u16: int) -> bool:
+    """True only inside the LMU error window (0x7F00–0x7FFF).
+
+    Signed signals (current/voltage/temperature) legitimately use the whole
+    negative range 0x8000–0xFFFF, so a bare ``>= 0x7F00`` guard would wrongly
+    reject every negative reading (discharge current, sub-zero temperatures).
+    """
+    return SENSOR_ERROR_MIN <= raw_u16 <= SENSOR_ERROR_MAX
 
 
 class BmsDriver(ABC):
@@ -88,15 +100,15 @@ def _u32_be(data: bytes, offset: int) -> int:
 
 
 def _cell_voltage_v(raw: int) -> float:
-    if raw >= SENSOR_ERROR_MIN or raw == 0:
-        # 0 = unused/not reported; 0x7Fxx = sensor error codes
+    if raw == 0 or _is_sensor_error(raw):
+        # 0 = unused/not reported; 0x7F00–0x7FFF = sensor error codes
         return float("nan")
     return raw * CELL_RES
 
 
 def _cell_id(raw: int) -> int | None:
     """Cell-group ID from Vmin/Vmax message; reject padding / error."""
-    if raw >= SENSOR_ERROR_MIN or raw == 0xFFFF:
+    if _is_sensor_error(raw) or raw == 0xFFFF:
         return None
     # Typical packs << 500 cells; 0x00FF often means “no valid min/max yet”
     if raw > 2000:
@@ -105,23 +117,24 @@ def _cell_id(raw: int) -> int | None:
 
 
 def _temp_c_u16(raw_u16: int) -> float | None:
-    if raw_u16 >= SENSOR_ERROR_MIN:
+    if _is_sensor_error(raw_u16):
         return None
-    # Re-interpret as signed for scale
+    # Re-interpret as signed for scale (sub-zero temperatures are negative)
     raw_i = struct.unpack(">h", struct.pack(">H", raw_u16 & 0xFFFF))[0]
     return raw_i * TEMP_RES
 
 
 def _pack_voltage_v(raw_u16: int) -> float | None:
-    if raw_u16 >= SENSOR_ERROR_MIN:
+    if _is_sensor_error(raw_u16):
         return None
     raw_i = struct.unpack(">h", struct.pack(">H", raw_u16 & 0xFFFF))[0]
     return raw_i * PACK_VOLTAGE_RES
 
 
 def _current_a(raw_u16: int) -> float | None:
-    if raw_u16 >= SENSOR_ERROR_MIN:
+    if _is_sensor_error(raw_u16):
         return None
+    # Signed: charge positive, discharge negative (0x8000–0xFFFF)
     raw_i = struct.unpack(">h", struct.pack(">H", raw_u16 & 0xFFFF))[0]
     return raw_i * CURRENT_RES
 
@@ -193,7 +206,13 @@ class BmsCanDriver(BmsDriver):
 
     def telemetry(self) -> BmsTelemetry:
         with self._lock:
-            return BmsTelemetry(**self._tel.__dict__)
+            # Surface what WE last commanded so consumers can spot an external
+            # controller holding the contactors against our desired state.
+            self._tel.desired_state = self._desired
+            # Deep copy: the RX thread keeps mutating list fields
+            # (cell_voltages, temperatures_c, …) in place, so a shallow
+            # copy would alias them and race with consumers iterating them.
+            return copy.deepcopy(self._tel)
 
     def is_healthy(self, timeout_s: float) -> bool:
         with self._lock:
@@ -539,7 +558,11 @@ class MockBmsDriver(BmsDriver):
 
     def telemetry(self) -> BmsTelemetry:
         with self._lock:
-            return BmsTelemetry(**self._tel.__dict__)
+            self._tel.desired_state = self._desired
+            # Deep copy: the RX thread keeps mutating list fields
+            # (cell_voltages, temperatures_c, …) in place, so a shallow
+            # copy would alias them and race with consumers iterating them.
+            return copy.deepcopy(self._tel)
 
     def is_healthy(self, timeout_s: float) -> bool:
         with self._lock:

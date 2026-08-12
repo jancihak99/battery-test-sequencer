@@ -12,6 +12,16 @@ from bts.models.program import ModuleProfile, Program, Step
 PhaseKind = Literal["idle", "charge", "discharge", "wait", "pulse", "done"]
 
 
+def _f(value: object, default: float) -> float:
+    """float() that tolerates a present-but-null / unparseable YAML value."""
+    if value is None:
+        return float(default)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
 @dataclass
 class SimSample:
     t_s: float  # simulated time from start
@@ -62,6 +72,11 @@ class StepfileSimulator:
         self._cap_ah = float(
             profile.typical_capacity_ah or profile.nominal_capacity_ah or 70.0
         )
+        # Cells in series, to map a per-cell stop threshold to pack volts.
+        try:
+            self._series = max(1, round(float(profile.pack_v_max) / float(profile.cell_v_max)))
+        except (TypeError, ValueError, ZeroDivisionError):
+            self._series = 10
         self.reset(randomize=True)
 
     def reset(self, *, randomize: bool = True) -> None:
@@ -84,8 +99,8 @@ class StepfileSimulator:
     def _ocv(self, soc: float) -> float:
         lo, hi = self.profile.pack_v_min, self.profile.pack_v_max
         s = max(0.0, min(1.0, soc / 100.0))
-        # Mild curve so mid-SOC is not perfectly linear
-        s_eff = 0.08 + 0.84 * (0.5 - 0.5 * math.cos(math.pi * s))
+        # Mild S-curve spanning the full pack range: OCV(0%)=Vmin, OCV(100%)=Vmax.
+        s_eff = 0.5 - 0.5 * math.cos(math.pi * s)
         return lo + s_eff * (hi - lo)
 
     def _terminal_v(self, soc: float, current_a: float) -> float:
@@ -109,10 +124,11 @@ class StepfileSimulator:
         self.state.ah_step = 0.0
         self._step_t0 = self.state.t_s
         self._pulse_left = 0.0
+        self.state.current_a = 0.0   # no current carried across step boundaries
         self.state.phase = self._phase_for(step)
         self.state.message = f"Step {step.id}: {step.type}"
         if step.type == "dcir":
-            pulse = float(step.params.get("pulse_s", self.profile.dcir_pulse_s))
+            pulse = _f(step.params.get("pulse_s"), self.profile.dcir_pulse_s)
             self._pulse_left = pulse
 
     @staticmethod
@@ -203,29 +219,29 @@ class StepfileSimulator:
             self.state.current_a = 0.0
             self.state.voltage_v = self._ocv(self.state.soc_pct)
             # Short handshake preview (+ settle after READY / contactors)
-            hand = min(8.0, float(p.get("timeout_s", 30)) * 0.15)
+            hand = min(8.0, _f(p.get("timeout_s"), 30) * 0.15)
             if t == "bms_ready":
-                hand += float(p.get("settle_s", 10.0))
+                hand += _f(p.get("settle_s"), 10.0)
             return elapsed >= hand
 
         if t == "wait_time":
             self.state.current_a = 0.0
             self.state.voltage_v = self._ocv(self.state.soc_pct)
             self.state.temp_c = max(22.0, self.state.temp_c - 0.002 * dt)
-            return elapsed >= float(p.get("seconds", p.get("timeout_s", 1)))
+            return elapsed >= _f(p.get("seconds"), _f(p.get("timeout_s"), 1))
 
         if t == "wait_temp":
             self.state.current_a = 0.0
             self.state.voltage_v = self._ocv(self.state.soc_pct)
             # Cool toward ambient
             self.state.temp_c += (24.0 - self.state.temp_c) * min(1.0, 0.02 * dt)
-            timeout = float(p.get("timeout_s", 7200))
+            timeout = _f(p.get("timeout_s"), 7200)
             t_max = p.get("t_max_c")
             t_min = p.get("t_min_c")
             ok = True
-            if t_max is not None and self.state.temp_c > float(t_max):
+            if t_max is not None and self.state.temp_c > _f(t_max, self.state.temp_c):
                 ok = False
-            if t_min is not None and self.state.temp_c < float(t_min):
+            if t_min is not None and self.state.temp_c < _f(t_min, self.state.temp_c):
                 ok = False
             return ok or elapsed >= timeout
 
@@ -249,10 +265,10 @@ class StepfileSimulator:
                 # tiny Ah during pulse
                 dah = abs(self.state.current_a) * use / 3600.0
                 self.state.soc_pct = max(0.0, self.state.soc_pct - dah / self._cap_ah * 100.0)
-                return self._pulse_left <= 0 and elapsed >= float(p.get("pulse_s", 10)) + 1.0
+                return self._pulse_left <= 0 and elapsed >= _f(p.get("pulse_s"), 10) + 1.0
             self.state.current_a = 0.0
             self.state.voltage_v = self._ocv(self.state.soc_pct)
-            return elapsed >= float(p.get("pulse_s", 10)) + 1.5
+            return elapsed >= _f(p.get("pulse_s"), 10) + 1.5
 
         if t == "charge":
             return self._power_step(step, dt, elapsed, mode="charge")
@@ -270,9 +286,9 @@ class StepfileSimulator:
     def _goto_soc_step(self, step: Step, dt: float, elapsed: float) -> bool:
         """Charge or discharge toward target SOC — mirrors live engine precondition."""
         p = step.params or {}
-        target = float(p.get("soc_pct", (p.get("stop") or {}).get("soc_pct", 50)))
-        band = float(p.get("band_pct", 0.5))
-        timeout = float(p.get("timeout_s", 8 * 3600))
+        target = _f(p.get("soc_pct"), _f((p.get("stop") or {}).get("soc_pct"), 50))
+        band = _f(p.get("band_pct"), 0.5)
+        timeout = _f(p.get("timeout_s"), 8 * 3600)
         try:
             current = abs(
                 resolve_amps(
@@ -295,11 +311,11 @@ class StepfileSimulator:
 
         if soc < target:
             self.state.phase = "charge"
-            i = current
-            # Soft CV near pack max while climbing SOC
-            v_set = float(p.get("voltage_v", self.profile.pack_v_max))
-            if self.state.voltage_v >= v_set - 0.15:
-                i = max(current * 0.12, current * (v_set - self.state.voltage_v) / 0.35)
+            # CC up to v_set, then CV: current that holds terminal V at v_set
+            v_set = _f(p.get("voltage_v"), self.profile.pack_v_max)
+            ocv = self._ocv(soc)
+            i_cv = (v_set - ocv) / max(1e-4, self.r_internal)
+            i = max(0.0, min(current, i_cv))
         else:
             self.state.phase = "discharge"
             i = -current
@@ -335,14 +351,15 @@ class StepfileSimulator:
         except Exception:
             current = abs(float(p.get("current_a", self.profile.default_test_current_a)))
         current = max(0.1, current)
-        timeout = float(stop.get("timeout_s", p.get("timeout_s", 8 * 3600)))
+        timeout = _f(stop.get("timeout_s"), _f(p.get("timeout_s"), 8 * 3600))
 
         if mode == "charge":
-            i = current
-            # CV taper near pack_v_max / voltage setpoint
-            v_set = float(p.get("voltage_v", self.profile.pack_v_max))
-            if self.state.voltage_v >= v_set - 0.15:
-                i = max(current * 0.15, current * (v_set - self.state.voltage_v) / 0.3)
+            # CC until terminal V hits v_set, then CV: taper current so the
+            # terminal voltage holds at v_set (never overshoots pack_v_max).
+            v_set = _f(p.get("voltage_v"), self.profile.pack_v_max)
+            ocv = self._ocv(self.state.soc_pct)
+            i_cv = (v_set - ocv) / max(1e-4, self.r_internal)
+            i = max(0.0, min(current, i_cv))
         else:
             i = -current
 
@@ -357,31 +374,31 @@ class StepfileSimulator:
 
         if elapsed >= timeout:
             return True
-        if "ah_target" in stop and self.state.ah_step >= float(stop["ah_target"]):
+        if "ah_target" in stop and self.state.ah_step >= _f(stop.get("ah_target"), float("inf")):
             return True
         if mode == "charge":
-            if "soc_pct" in stop and self.state.soc_pct >= float(stop["soc_pct"]):
+            if "soc_pct" in stop and self.state.soc_pct >= _f(stop.get("soc_pct"), float("inf")):
                 return True
             # With i_min_a, Vmax alone does not end (mirrors live engine CV hold)
             if "i_min_a" not in stop:
-                if "pack_v_max" in stop and self.state.voltage_v >= float(stop["pack_v_max"]):
+                if "pack_v_max" in stop and self.state.voltage_v >= _f(stop.get("pack_v_max"), float("inf")):
                     return True
                 if "cell_v_max" in stop:
-                    approx = float(stop["cell_v_max"]) * 10
+                    approx = _f(stop.get("cell_v_max"), float("inf")) * self._series
                     if self.state.voltage_v >= approx:
                         return True
             if "i_min_a" in stop and self.state.voltage_v >= v_set - 0.15:
-                if abs(i) <= float(stop["i_min_a"]):
+                if abs(i) <= _f(stop.get("i_min_a"), 0.0):
                     return True
             if self.state.soc_pct >= 99.5:
                 return True
         else:
-            if "soc_pct" in stop and self.state.soc_pct <= float(stop["soc_pct"]):
+            if "soc_pct" in stop and self.state.soc_pct <= _f(stop.get("soc_pct"), -1.0):
                 return True
-            if "pack_v_min" in stop and self.state.voltage_v <= float(stop["pack_v_min"]):
+            if "pack_v_min" in stop and self.state.voltage_v <= _f(stop.get("pack_v_min"), -1.0):
                 return True
             if "cell_v_min" in stop:
-                approx = float(stop["cell_v_min"]) * 10
+                approx = _f(stop.get("cell_v_min"), -1.0) * self._series
                 if self.state.voltage_v <= approx:
                     return True
             if self.state.soc_pct <= 0.5:
