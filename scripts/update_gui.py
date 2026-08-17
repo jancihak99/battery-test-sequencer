@@ -1,18 +1,18 @@
 """Visible update progress window — launched after BTS exits.
 
+Uses PySide6 (which every BTS install already ships, since the app itself is PySide6).
+The offline Setup bundles an *embeddable* Python that has NO tkinter, so a tkinter
+window would crash on import and the update would silently do nothing.
+
 Usage:
   pythonw scripts/update_gui.py <root> [--wait-exit] [--restart]
 """
 from __future__ import annotations
 
-import queue
 import subprocess
 import sys
-import threading
 import time
-import tkinter as tk
 from pathlib import Path
-from tkinter import messagebox, ttk
 
 ROOT_HINT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT_HINT / "src"))
@@ -107,111 +107,117 @@ def main(argv: list[str]) -> int:
     restart = "--restart" in args
     args = [a for a in args if a not in ("--wait-exit", "--restart")]
     root = Path(args[0]).resolve() if args else ROOT_HINT
+
+    from PySide6.QtCore import Qt, QObject, QTimer, Signal
+    from PySide6.QtWidgets import (
+        QApplication,
+        QLabel,
+        QMessageBox,
+        QProgressBar,
+        QVBoxLayout,
+        QWidget,
+    )
+
+    app = QApplication(sys.argv[:1])
+
     if not (root / "main.py").exists():
-        messagebox.showerror("Aktualizace BTS", f"Nenalezen main.py v:\n{root}")
+        QMessageBox.critical(None, "Aktualizace BTS", f"Nenalezen main.py v:\n{root}")
         return 1
 
     from bts.update import apply_best_update, check_for_update
 
-    q: queue.Queue[tuple[str, object]] = queue.Queue()
-    win = tk.Tk()
-    win.title("Aktualizace Battery Test Sequencer")
-    win.geometry("460x180")
-    win.resizable(False, False)
-    try:
-        win.attributes("-topmost", True)
-    except Exception:
-        pass
+    win = QWidget()
+    win.setWindowTitle("Aktualizace Battery Test Sequencer")
+    win.setFixedSize(480, 190)
+    win.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+    lay = QVBoxLayout(win)
+    lay.setContentsMargins(18, 16, 18, 16)
+    lay.setSpacing(10)
+    title = QLabel("Stahuji a instaluji novou verzi…")
+    title.setStyleSheet("font-size:15px;font-weight:700;")
+    status = QLabel("Připravuji…")
+    status.setWordWrap(True)
+    bar = QProgressBar()
+    bar.setRange(0, 1000)
+    bar.setValue(0)
+    hint = QLabel("Nezavírejte toto okno. Po dokončení se BTS spustí samo.")
+    hint.setStyleSheet("color:#555;")
+    hint.setWordWrap(True)
+    lay.addWidget(title)
+    lay.addWidget(status)
+    lay.addWidget(bar)
+    lay.addWidget(hint)
+    win.show()
 
-    frm = ttk.Frame(win, padding=16)
-    frm.pack(fill="both", expand=True)
-    ttk.Label(frm, text="Stahuji a instaluji novou verzi…", font=("Segoe UI", 11, "bold")).pack(
-        anchor="w"
-    )
-    status = ttk.Label(frm, text="Připravuji…", wraplength=420)
-    status.pack(anchor="w", pady=(10, 6))
-    bar = ttk.Progressbar(frm, mode="determinate", maximum=1000)
-    bar.pack(fill="x", pady=4)
-    hint = ttk.Label(
-        frm,
-        text="Nezavírejte toto okno. Po dokončení se BTS spustí samo.",
-        foreground="#555",
-    )
-    hint.pack(anchor="w", pady=(8, 0))
+    class Bridge(QObject):
+        progress = Signal(str, object)  # message, frac (float | None)
+        done = Signal(str)
+        failed = Signal(str)
 
-    def set_progress(msg: str, frac: float | None) -> None:
-        q.put(("progress", (msg, frac)))
+    bridge = Bridge()
+
+    def set_progress(msg: str, frac) -> None:
+        status.setText(str(msg))
+        if frac is None:
+            bar.setRange(0, 0)  # indeterminate / busy
+        else:
+            if bar.maximum() == 0:
+                bar.setRange(0, 1000)
+            bar.setValue(int(max(0.0, min(1.0, float(frac))) * 1000))
+
+    def on_done(msg: str) -> None:
+        set_progress(msg, 1.0)
+        if restart:
+            status.setText(f"{msg}\nSpouštím BTS…")
+            app.processEvents()
+
+            def _go() -> None:
+                _restart_bts(root)
+                QTimer.singleShot(400, win.close)
+
+            QTimer.singleShot(500, _go)
+        else:
+            QMessageBox.information(win, "Aktualizace BTS", str(msg))
+            win.close()
+
+    def on_failed(msg: str) -> None:
+        QMessageBox.critical(
+            win,
+            "Aktualizace selhala",
+            f"{msg}\n\n"
+            "Když je BTS v Program Files, spusť update přes "
+            "BTS-Setup.exe jako správce, nebo znovu z Nastavení.",
+        )
+        win.close()
+
+    bridge.progress.connect(set_progress)  # queued: worker thread -> GUI thread
+    bridge.done.connect(on_done)
+    bridge.failed.connect(on_failed)
 
     def worker() -> None:
         try:
             if wait_exit:
-                set_progress("Čekám na ukončení aplikace…", None)
+                bridge.progress.emit("Čekám na ukončení aplikace…", None)
                 _wait_for_bts_exit(root)
-            set_progress("Kontroluji GitHub Releases…", None)
+            bridge.progress.emit("Kontroluji GitHub Releases…", None)
             result = check_for_update(root)
             if result.error:
                 raise RuntimeError(result.error)
             if not result.update_available:
-                set_progress(result.message or "Už jsi na nejnovější verzi.", 1.0)
-                q.put(("done", result.message or "Žádná nová verze"))
+                bridge.done.emit(result.message or "Žádná nová verze")
                 return
-            set_progress(f"Stahuji {result.remote_version or 'update'}…", 0.0)
-            msg = apply_best_update(root, result.release, on_progress=set_progress)
-            set_progress("Hotovo", 1.0)
-            q.put(("done", msg))
-        except Exception as exc:
-            q.put(("error", str(exc)))
+            bridge.progress.emit(f"Stahuji {result.remote_version or 'update'}…", 0.0)
+            msg = apply_best_update(
+                root, result.release, on_progress=lambda m, f: bridge.progress.emit(m, f)
+            )
+            bridge.done.emit(msg)
+        except Exception as exc:  # noqa: BLE001
+            bridge.failed.emit(str(exc))
 
-    def pump() -> None:
-        try:
-            while True:
-                kind, payload = q.get_nowait()
-                if kind == "progress":
-                    msg, frac = payload  # type: ignore[misc]
-                    status.configure(text=str(msg))
-                    if frac is None:
-                        if str(bar.cget("mode")) != "indeterminate":
-                            bar.configure(mode="indeterminate")
-                            bar.start(12)
-                    else:
-                        if str(bar.cget("mode")) == "indeterminate":
-                            bar.stop()
-                            bar.configure(mode="determinate", maximum=1000)
-                        bar["value"] = int(max(0.0, min(1.0, float(frac))) * 1000)
-                elif kind == "done":
-                    status.configure(text=str(payload))
-                    bar.configure(mode="determinate")
-                    bar["value"] = 1000
-                    if restart:
-                        status.configure(text=f"{payload}\nSpouštím BTS…")
-                        win.update_idletasks()
-                        time.sleep(0.6)
-                        _restart_bts(root)
-                        win.after(400, win.destroy)
-                    else:
-                        messagebox.showinfo("Aktualizace BTS", str(payload))
-                        win.destroy()
-                    return
-                elif kind == "error":
-                    try:
-                        bar.stop()
-                    except Exception:
-                        pass
-                    messagebox.showerror(
-                        "Aktualizace selhala",
-                        f"{payload}\n\n"
-                        "Když je BTS v Program Files, spusť update přes "
-                        "BTS-Setup.exe jako správce, nebo znovu z Nastavení.",
-                    )
-                    win.destroy()
-                    return
-        except queue.Empty:
-            pass
-        win.after(100, pump)
+    import threading
 
-    threading.Thread(target=worker, name="bts-update-gui", daemon=True).start()
-    win.after(100, pump)
-    win.mainloop()
+    threading.Thread(target=worker, name="bts-update-worker", daemon=True).start()
+    app.exec()
     return 0
 
 
