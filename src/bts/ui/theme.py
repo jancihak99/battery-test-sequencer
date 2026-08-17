@@ -1,5 +1,10 @@
 """EBZ nano power light theme for Battery Test Sequencer."""
 
+from pathlib import Path
+
+# Combo drop-down arrow asset (repo assets/; theme.py → ui → bts → src → root).
+_ARROW_PATH = (Path(__file__).resolve().parents[3] / "assets" / "chevron_down.svg").as_posix()
+
 # Accent from EBZ logo blue block
 ACCENT = "#008FC1"
 ACCENT_HOVER = "#00a6dc"
@@ -98,8 +103,15 @@ QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled, QDoubleSpinBox:disabl
     border: 1px solid {BORDER};
 }}
 QComboBox::drop-down {{
+    subcontrol-origin: padding;
+    subcontrol-position: center right;
     border: none;
     width: 24px;
+}}
+QComboBox::down-arrow {{
+    image: url("{_ARROW_PATH}");
+    width: 12px;
+    height: 12px;
 }}
 QComboBox QAbstractItemView {{
     background: {BG_INPUT};

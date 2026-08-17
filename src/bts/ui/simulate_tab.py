@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING, Callable
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import (
-    QComboBox,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -19,10 +18,11 @@ from PySide6.QtWidgets import (
 )
 
 from bts.engine.sim_preview import SimSample, StepfileSimulator
+from bts.ui.module_step_picker import ModuleStepPicker
 from bts.ui.theme import ACCENT, BG, BG_PANEL, BORDER, OK, TEXT, TEXT_DIM
 
 if TYPE_CHECKING:
-    from bts.models.program import ModuleProfile, Program
+    from bts.models.program import ModuleGroup, ModuleProfile, Program
 
 
 _PHASE_COLOR = {
@@ -304,7 +304,7 @@ class SimulateTab(QWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._get_program: Callable[[], tuple[Program | None, ModuleProfile | None]] | None = None
-        self._list_provider: Callable[[], list[tuple[str, Path]]] | None = None
+        self._list_provider: Callable[[], list[ModuleGroup]] | None = None
         self._file_loader: Callable[[Path], tuple[Program | None, ModuleProfile | None]] | None = None
         self._sim: StepfileSimulator | None = None
 
@@ -333,11 +333,9 @@ class SimulateTab(QWidget):
         row.setContentsMargins(16, 12, 16, 12)
         row.setSpacing(10)
 
-        row.addWidget(QLabel("Program"))
-        self.program_combo = QComboBox()
-        self.program_combo.setMinimumWidth(240)
-        self.program_combo.setToolTip("Vyber stepfile k simulaci, nebo program z Editoru.")
-        row.addWidget(self.program_combo, 0)
+        self.program_picker = ModuleStepPicker(module_label="Typ modulu", step_label="Program")
+        self.program_picker.setToolTip("Vyber typ modulu a stepfile, nebo program z Editoru.")
+        row.addWidget(self.program_picker, 0)
 
         self.btn_run = QPushButton("Simulovat")
         self.btn_run.setObjectName("btnPrimary")
@@ -389,7 +387,7 @@ class SimulateTab(QWidget):
     ) -> None:
         self._get_program = fn
 
-    def set_program_list_provider(self, fn: Callable[[], list[tuple[str, Path]]]) -> None:
+    def set_program_list_provider(self, fn: Callable[[], list[ModuleGroup]]) -> None:
         self._list_provider = fn
 
     def set_file_loader(
@@ -398,33 +396,22 @@ class SimulateTab(QWidget):
         self._file_loader = fn
 
     def refresh_programs(self) -> None:
-        """Repopulate the program picker (kept current with the stepfile folder)."""
+        """Repopulate the two-level picker (kept current with the stepfile folder)."""
         if self._list_provider is None:
             return
-        prev = self.program_combo.currentData()
-        self.program_combo.blockSignals(True)
-        self.program_combo.clear()
-        self.program_combo.addItem(self._EDITOR_LABEL, None)
-        for label, path in self._list_provider():
-            self.program_combo.addItem(label, str(path))
-        # Restore previous selection if still present
-        if prev is not None:
-            idx = self.program_combo.findData(prev)
-            if idx >= 0:
-                self.program_combo.setCurrentIndex(idx)
-        self.program_combo.blockSignals(False)
+        self.program_picker.set_groups(self._list_provider(), leading=self._EDITOR_LABEL)
 
     # ---- run -----------------------------------------------------------
 
     def _resolve_program(self):
         """(program, profile) from the picker: a stepfile, or the editor program."""
-        data = self.program_combo.currentData()
-        if data is None:
+        path = self.program_picker.current_path()
+        if path is None:  # leading "Editor program" entry
             if self._get_program is not None:
                 return self._get_program()
             return None, None
         if self._file_loader is not None:
-            return self._file_loader(Path(data))
+            return self._file_loader(path)
         return None, None
 
     def _run_full(self) -> None:

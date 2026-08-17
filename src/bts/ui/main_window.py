@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QFrame,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -46,8 +47,10 @@ from bts.models.program import (
     Program,
     ProgramMeta,
     Step,
+    archive_file,
+    clone_profile,
     list_profiles,
-    list_programs,
+    list_programs_by_module,
     load_profile,
     load_program,
     save_program,
@@ -55,6 +58,8 @@ from bts.models.program import (
 from bts.models.telemetry import BmuState, DesiredState
 from bts.ui.dashboard import LiveDashboard
 from bts.ui.diagnostics_tab import DiagnosticsTab
+from bts.ui.logging_tab import LoggingTab
+from bts.ui.module_step_picker import ModuleStepPicker
 from bts.ui.simulate_tab import SimulateTab
 from bts.ui.step_form import StepForm
 from bts.ui.theme import (
@@ -108,6 +113,7 @@ class MainWindow(QMainWindow):
         self._build_run_tab()
         self._build_editor_tab()
         self._build_simulate_tab()
+        self._build_logging_tab()
         self._build_history_tab()
         self._build_settings_tab()
         self._build_diagnostics_tab()
@@ -251,8 +257,10 @@ class MainWindow(QMainWindow):
         top = QHBoxLayout(toolbar)
         top.setContentsMargins(16, 12, 16, 12)
         top.setSpacing(10)
-        self.program_combo = QComboBox()
-        self.program_combo.setMinimumWidth(220)
+        self.program_picker = ModuleStepPicker(allow_delete=True)
+        self.program_picker.selection_changed.connect(self._on_picker_selection)
+        self.program_picker.delete_requested.connect(self._delete_stepfile)
+        self.program_picker.delete_category_requested.connect(self._delete_module_type)
         self.profile_label = QLabel("Profile: —")
         self.profile_label.setStyleSheet(f"color:{TEXT_DIM};")
         self.serial_edit = QLineEdit()
@@ -278,8 +286,7 @@ class MainWindow(QMainWindow):
         self.btn_start.clicked.connect(self._start_run)
         self.btn_stop.clicked.connect(self._stop_run)
         self.btn_clear_dtc.clicked.connect(self._clear_bms_dtcs)
-        top.addWidget(QLabel("Program"))
-        top.addWidget(self.program_combo, 1)
+        top.addWidget(self.program_picker, 1)
         top.addWidget(self.profile_label)
         top.addWidget(QLabel("Sériové č."))
         top.addWidget(self.serial_edit)
@@ -383,7 +390,6 @@ class MainWindow(QMainWindow):
         layout.addWidget(split, 1)
 
         self.tabs.addTab(w, "Běh")
-        self.program_combo.currentIndexChanged.connect(self._on_program_selected)
 
     @staticmethod
     def _dim(text: str) -> QLabel:
@@ -414,6 +420,16 @@ class MainWindow(QMainWindow):
         self.ed_profile = QComboBox()
         self.ed_profile.setToolTip("Battery module profile for the whole program (all steps).")
         self.ed_profile.currentTextChanged.connect(self._on_editor_profile_changed)
+        self.btn_new_module = QPushButton("＋ Nový typ modulu")
+        self.btn_new_module.setToolTip(
+            "Vytvoří nový typ modulu (profil) naklonováním vybraného jako šablony."
+        )
+        self.btn_new_module.clicked.connect(self._new_module_type)
+        profile_row = QHBoxLayout()
+        profile_row.setContentsMargins(0, 0, 0, 0)
+        profile_row.setSpacing(6)
+        profile_row.addWidget(self.ed_profile, 1)
+        profile_row.addWidget(self.btn_new_module)
         self.ed_desc = QLineEdit()
         self.ed_prog_tmax = QDoubleSpinBox()
         self.ed_prog_tmax.setRange(0, 100)
@@ -426,7 +442,7 @@ class MainWindow(QMainWindow):
         self.chk_prog_tmax = QCheckBox("Program Tmax (abort)")
         self.chk_prog_tmax.setChecked(True)
         meta.addRow("Name", self.ed_name)
-        meta.addRow("Module profile", self.ed_profile)
+        meta.addRow("Module profile", profile_row)
         meta.addRow("Description", self.ed_desc)
         meta.addRow("", self.chk_prog_tmax)
         meta.addRow("Tmax celý program", self.ed_prog_tmax)
@@ -494,12 +510,8 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.simulate_tab, "Simulace")
 
     def _list_programs_for_sim(self):
-        """(label, path) of every stepfile — for the Simulate program picker."""
-        items = []
-        for p in list_programs(self.cfg.programs_path):
-            label = f"[DEV] {p.stem}" if "dev" in p.parts else p.stem
-            items.append((label, p))
-        return items
+        """Module-grouped stepfiles for the Simulate two-level picker."""
+        return list_programs_by_module(self.cfg.programs_path, self.cfg.profiles_path)
 
     def _load_program_and_profile(self, path):
         """Load a stepfile + its module profile for offline simulation."""
@@ -1117,34 +1129,39 @@ class MainWindow(QMainWindow):
         self.diagnostics_tab = DiagnosticsTab(self.cfg)
         self.tabs.addTab(self.diagnostics_tab, "Diagnostika")
 
+    def _build_logging_tab(self) -> None:
+        self.logging_tab = LoggingTab()
+        self.logging_tab.set_bms_provider(lambda: self._bms)
+        self.logging_tab.set_name_provider(
+            lambda: self.program.meta.name if self.program else "bts-log"
+        )
+        self.tabs.addTab(self.logging_tab, "Logování")
+
     def _reload_lists(self) -> None:
         keep = self.program_path
-        self.program_combo.blockSignals(True)
-        self.program_combo.clear()
-        for p in list_programs(self.cfg.programs_path):
-            label = p.stem
-            if "dev" in p.parts:
-                label = f"[DEV] {p.stem}"
-            self.program_combo.addItem(label, str(p))
+        # Editor module-type combo (categories) — keep current selection if still there.
+        self.ed_profile.blockSignals(True)
+        cur_prof = self.ed_profile.currentText()
         self.ed_profile.clear()
         for p in list_profiles(self.cfg.profiles_path):
             self.ed_profile.addItem(p.stem, str(p))
-        select_idx = 0
-        if keep is not None:
-            keep_res = keep.resolve()
-            for i in range(self.program_combo.count()):
-                data = self.program_combo.itemData(i)
-                if data and Path(data).resolve() == keep_res:
-                    select_idx = i
-                    break
-        if self.program_combo.count():
-            # Keep signals blocked so setCurrentIndex does not also fire
-            # _on_program_selected — we call it once explicitly below.
-            self.program_combo.setCurrentIndex(select_idx)
-            self.program_combo.blockSignals(False)
-            self._on_program_selected(select_idx)
-        else:
-            self.program_combo.blockSignals(False)
+        if cur_prof:
+            j = self.ed_profile.findText(cur_prof)
+            if j >= 0:
+                self.ed_profile.setCurrentIndex(j)
+        self.ed_profile.blockSignals(False)
+        # Two-level picker (module type -> step file). set_groups is silent.
+        groups = list_programs_by_module(self.cfg.programs_path, self.cfg.profiles_path)
+        self.program_picker.set_groups(groups, keep_path=keep)
+        sel = self.program_picker.current_path()
+        # Load when nothing is loaded yet, or the kept file vanished (archived/deleted)
+        # and the picker landed on a different step file.
+        if sel is not None and (
+            self.program is None
+            or keep is None
+            or sel.resolve() != keep.resolve()
+        ):
+            self._load_program_path(sel)
         self._refresh_history()
         if hasattr(self, "simulate_tab"):
             self.simulate_tab.refresh_programs()
@@ -1164,10 +1181,11 @@ class MainWindow(QMainWindow):
         )
         return ans == QMessageBox.Yes
 
-    def _on_program_selected(self, idx: int) -> None:
-        if idx < 0:
+    def _on_picker_selection(self, path: object) -> None:
+        """User picked a step file in the toolbar picker (guarded)."""
+        if path is None:
             return
-        path = Path(self.program_combo.itemData(idx))
+        path = Path(path)
         # Switching away from an unsaved / different program
         if (
             self.program is not None
@@ -1175,16 +1193,14 @@ class MainWindow(QMainWindow):
             and (self.program_path is None or path.resolve() != self.program_path.resolve())
         ):
             if not self._confirm_discard_edits("načíst jiný program"):
-                # Revert combo selection
-                self.program_combo.blockSignals(True)
-                if self.program_path is not None:
-                    for i in range(self.program_combo.count()):
-                        data = self.program_combo.itemData(i)
-                        if data and Path(data).resolve() == self.program_path.resolve():
-                            self.program_combo.setCurrentIndex(i)
-                            break
-                self.program_combo.blockSignals(False)
+                # Revert picker to the loaded program (silent)
+                self.program_picker.select_path(self.program_path)
                 return
+        self._load_program_path(path)
+
+    def _load_program_path(self, path: Path) -> None:
+        """Load a step file into the editor + as the active program (no guard)."""
+        path = Path(path)
         self.program = load_program(path)
         self.program_path = path
         self._editor_dirty = False
@@ -1432,6 +1448,119 @@ class MainWindow(QMainWindow):
         self._editor_dirty = True
         self._sync_editor_from_program()
 
+    def _new_module_type(self) -> None:
+        """Create a new module type (category) by cloning an existing profile."""
+        src = self.ed_profile.currentData()
+        if not src:
+            profiles = list_profiles(self.cfg.profiles_path)
+            if not profiles:
+                QMessageBox.warning(
+                    self,
+                    "Nový typ modulu",
+                    "Není žádný profil k naklonování. Přidej profil do profiles/.",
+                )
+                return
+            src = str(profiles[0])
+        src_path = Path(src)
+        new_id, ok = QInputDialog.getText(
+            self,
+            "Nový typ modulu",
+            f"ID nového typu modulu (klon z '{src_path.stem}').\n"
+            "Bez mezer, použije se jako název souboru:",
+        )
+        if not ok:
+            return
+        new_id = new_id.strip()
+        if not new_id or any(c in new_id for c in ' \\/:*?"<>|'):
+            QMessageBox.warning(self, "Nový typ modulu", "Neplatné ID (mezery / speciální znaky).")
+            return
+        if (self.cfg.profiles_path / f"{new_id}.yaml").exists():
+            QMessageBox.warning(self, "Nový typ modulu", f"Typ modulu '{new_id}' už existuje.")
+            return
+        new_name, ok = QInputDialog.getText(
+            self, "Nový typ modulu", "Popisný název:", text=new_id
+        )
+        if not ok:
+            return
+        try:
+            clone_profile(src_path, new_id, new_name.strip() or new_id, self.cfg.profiles_path)
+        except Exception as exc:
+            QMessageBox.critical(self, "Nový typ modulu", f"Nepodařilo se vytvořit: {exc}")
+            return
+        self._reload_lists()
+        i = self.ed_profile.findText(new_id)
+        if i >= 0:
+            self.ed_profile.setCurrentIndex(i)
+        QMessageBox.information(
+            self,
+            "Nový typ modulu",
+            f"Vytvořeno profiles/{new_id}.yaml (klon z {src_path.stem}).\n"
+            "Uprav specifikace baterie v tom souboru podle potřeby.",
+        )
+        self.statusBar().showMessage(f"Nový typ modulu: {new_id}", 4000)
+
+    def _delete_stepfile(self, path: object) -> None:
+        """Archive a step file (recoverable delete) from the toolbar picker."""
+        path = Path(path)
+        if not path.exists():
+            self._reload_lists()
+            return
+        reply = QMessageBox.question(
+            self,
+            "Smazat step file",
+            f"Přesunout '{path.stem}' do archivu (programs/_archiv/)?\n"
+            "Soubor zůstane obnovitelný, ale zmizí z roletky.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        try:
+            dest = archive_file(path, self.cfg.programs_path / "_archiv")
+        except Exception as exc:
+            QMessageBox.critical(self, "Smazat step file", f"Nepodařilo se: {exc}")
+            return
+        # If we archived the loaded program, drop the stale path so reload picks another.
+        if self.program_path is not None and self.program_path.resolve() == path.resolve():
+            self.program_path = None
+            self._editor_dirty = False
+        self._reload_lists()
+        self.statusBar().showMessage(f"Přesunuto do archivu: {dest.name}", 4000)
+
+    def _delete_module_type(self, module_id: object) -> None:
+        """Archive an empty module type (profile) from the picker."""
+        module_id = str(module_id)
+        prof_path = self.cfg.profiles_path / f"{module_id}.yaml"
+        # Guard: never delete a category that still has step files.
+        groups = list_programs_by_module(self.cfg.programs_path, self.cfg.profiles_path)
+        grp = next((g for g in groups if g.module_id == module_id), None)
+        if grp is not None and grp.programs:
+            QMessageBox.warning(
+                self,
+                "Smazat typ modulu",
+                f"Typ modulu '{module_id}' má step fily — nejdřív je smaž/přesuň.",
+            )
+            return
+        if not prof_path.exists():
+            self._reload_lists()
+            return
+        reply = QMessageBox.question(
+            self,
+            "Smazat typ modulu",
+            f"Přesunout prázdný typ modulu '{module_id}' do archivu (profiles/_archiv/)?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        try:
+            dest = archive_file(prof_path, self.cfg.profiles_path / "_archiv")
+        except Exception as exc:
+            QMessageBox.critical(self, "Smazat typ modulu", f"Nepodařilo se: {exc}")
+            return
+        self._reload_lists()
+        self.statusBar().showMessage(f"Typ modulu do archivu: {dest.name}", 4000)
+
     def _open_program(self) -> None:
         if not self._confirm_discard_edits("otevřít jiný program"):
             return
@@ -1615,6 +1744,8 @@ class MainWindow(QMainWindow):
             pass
 
     def _disconnect_hw(self) -> None:
+        if getattr(self, "logging_tab", None) is not None:
+            self.logging_tab.stop_if_running()
         if self.engine is not None:
             try:
                 self.engine.abort()
@@ -1781,6 +1912,8 @@ class MainWindow(QMainWindow):
         return True
 
     def closeEvent(self, event) -> None:  # noqa: N802
+        if getattr(self, "logging_tab", None) is not None:
+            self.logging_tab.stop_if_running()
         if not self._bench_needs_safe_shutdown():
             # Idle but connected — release Kvaser/COM so other tools can use them
             if self._bms is not None or self._ea is not None:

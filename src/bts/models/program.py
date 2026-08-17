@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -165,7 +166,97 @@ def list_profiles(directory: Path) -> list[Path]:
 
 
 def list_programs(directory: Path) -> list[Path]:
-    """Production YAMLs in programs/, then programs/dev/ (smoke/mock only)."""
+    """Production YAMLs in programs/, then programs/dev/ (smoke/mock only).
+
+    Archived files under programs/_archiv/ are intentionally not globbed.
+    """
     root = sorted(directory.glob("*.yaml"))
     dev = sorted((directory / "dev").glob("*.yaml")) if (directory / "dev").is_dir() else []
     return root + dev
+
+
+def program_label(path: Path) -> str:
+    """Display name for a step file (``[DEV]`` prefix for programs/dev/)."""
+    return f"[DEV] {path.stem}" if "dev" in path.parts else path.stem
+
+
+def program_module_of(path: Path) -> str:
+    """Read only ``meta.module_profile`` from a step file (cheap, tolerant)."""
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return ""
+    meta = data.get("meta") or {}
+    return str(meta.get("module_profile") or "")
+
+
+@dataclass
+class ModuleGroup:
+    """A module type (category) and the step files that target it."""
+
+    module_id: str
+    label: str
+    programs: list[tuple[str, Path]] = field(default_factory=list)
+    known_profile: bool = True  # False = referenced by a program but no profile file
+
+
+def list_programs_by_module(programs_dir: Path, profiles_dir: Path) -> list[ModuleGroup]:
+    """Group step files by their module type for the two-level picker.
+
+    Every profile becomes a category (even with no step files, so a first step file
+    can be created for it). Step files whose ``module_profile`` has no matching profile
+    file are collected into trailing ``(neznámý profil: X)`` groups so they stay
+    selectable. Ordering: profiles alphabetically, then unknown-profile groups.
+    """
+    groups: dict[str, ModuleGroup] = {}
+    for prof in list_profiles(profiles_dir):
+        mid = prof.stem
+        groups[mid] = ModuleGroup(module_id=mid, label=mid, known_profile=True)
+
+    unknown: dict[str, ModuleGroup] = {}
+    for prog in list_programs(programs_dir):
+        mid = program_module_of(prog) or "?"
+        entry = (program_label(prog), prog)
+        if mid in groups:
+            groups[mid].programs.append(entry)
+        else:
+            grp = unknown.get(mid)
+            if grp is None:
+                grp = unknown[mid] = ModuleGroup(
+                    module_id=mid,
+                    label=f"(neznámý profil: {mid})",
+                    known_profile=False,
+                )
+            grp.programs.append(entry)
+
+    ordered = [groups[k] for k in sorted(groups)]
+    ordered += [unknown[k] for k in sorted(unknown)]
+    return ordered
+
+
+def clone_profile(src_path: Path, new_id: str, new_name: str, profiles_dir: Path) -> Path:
+    """Copy an existing module profile as a template under a new id/name."""
+    data = yaml.safe_load(src_path.read_text(encoding="utf-8")) or {}
+    data["id"] = new_id
+    data["name"] = new_name
+    dest = profiles_dir / f"{new_id}.yaml"
+    if dest.exists():
+        raise FileExistsError(f"Profil už existuje: {dest}")
+    profiles_dir.mkdir(parents=True, exist_ok=True)
+    dest.write_text(
+        yaml.safe_dump(data, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+    return dest
+
+
+def archive_file(path: Path, archive_dir: Path) -> Path:
+    """Move a YAML aside into ``_archiv/`` (recoverable delete). Returns new path."""
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    dest = archive_dir / path.name
+    n = 1
+    while dest.exists():
+        dest = archive_dir / f"{path.stem}_{n}{path.suffix}"
+        n += 1
+    shutil.move(str(path), str(dest))
+    return dest
